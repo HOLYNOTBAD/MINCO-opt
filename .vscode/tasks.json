@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ROS: central_catkin_make",
+            "type": "shell",
+            "command": "/usr/bin/bash",
+            "args": [
+                "-ic",
+                "catkin_make --directory ${workspaceFolder} -j$(nproc) -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=1 -DPYTHON_EXECUTABLE=/usr/bin/python3"
+            ],
+            "problemMatcher": "$catkin-gcc",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}
