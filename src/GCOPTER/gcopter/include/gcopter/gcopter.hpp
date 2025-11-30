@@ -738,74 +738,76 @@ namespace gcopter
                           const Eigen::VectorXd &penaltyWeights,
                           const Eigen::VectorXd &physicalParams)
         {
-            rho = timeWeight;
-            headPVA = initialPVA;
-            tailPVA = terminalPVA;
+            rho = timeWeight; // 设置时间权重 rho（用于时间分配相关的代价项）
+            headPVA = initialPVA; // 设置起点的位姿/速度/加速度（PVA）
+            tailPVA = terminalPVA; // 设置终点的位姿/速度/加速度（PVA）
 
-            hPolytopes = safeCorridor;
-            for (size_t i = 0; i < hPolytopes.size(); i++)
+            hPolytopes = safeCorridor; // 复制输入的安全走廊（H 表示法，每行为一个平面）
+            for (size_t i = 0; i < hPolytopes.size(); i++) // 归一化每个多面体的平面法向量
             {
-                const Eigen::ArrayXd norms =
+                const Eigen::ArrayXd norms = // 计算每个平面行的法向量模长（外法线）
                     hPolytopes[i].leftCols<3>().rowwise().norm();
-                hPolytopes[i].array().colwise() /= norms;
+                hPolytopes[i].array().colwise() /= norms; // 用法向量长度对每一行进行归一化
             }
-            if (!processCorridor(hPolytopes, vPolytopes))
+            if (!processCorridor(hPolytopes, vPolytopes)) // 将 H 表示的多面体转换为 V 表示（顶点形式）
             {
-                return false;
+                return false; // 若走廊处理失败则返回 false
             }
 
-            polyN = hPolytopes.size();
-            smoothEps = smoothingFactor;
-            integralRes = integralResolution;
-            magnitudeBd = magnitudeBounds;
-            penaltyWt = penaltyWeights;
-            physicalPm = physicalParams;
-            allocSpeed = magnitudeBd(0) * 3.0;
+            polyN = hPolytopes.size(); // 走廊中多面体数量
+            smoothEps = smoothingFactor; // 平滑项的 epsilon（用于惩罚函数的平滑）
+            integralRes = integralResolution; // 积分/数值求积的采样分辨率
+            magnitudeBd = magnitudeBounds; // 动态量边界（速度、角速度、推力等）
+            penaltyWt = penaltyWeights; // 约束惩罚项的权重
+            physicalPm = physicalParams; // 物理参数（质量、重力、阻力系数等）
+            allocSpeed = magnitudeBd(0) * 3.0; // 初始分配速度启发式（取最大速度的 3 倍）
 
+            // 通过 V 多面体计算一条最短路径作为初始轨迹骨架
             getShortestPath(headPVA.col(0), tailPVA.col(0),
                             vPolytopes, smoothEps, shortPath);
-            const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN);
+            const Eigen::Matrix3Xd deltas = shortPath.rightCols(polyN) - shortPath.leftCols(polyN); // 每段的位移向量
+            // 根据每段长度和给定的 lengthPerPiece 计算每个多面体应分配的子段数
             pieceIdx = (deltas.colwise().norm() / lengthPerPiece).cast<int>().transpose();
-            pieceIdx.array() += 1;
-            pieceN = pieceIdx.sum();
+            pieceIdx.array() += 1; // 保证每段至少有一个子段
+            pieceN = pieceIdx.sum(); // 子段（piece）的总数
 
-            temporalDim = pieceN;
-            spatialDim = 0;
-            vPolyIdx.resize(pieceN - 1);
-            hPolyIdx.resize(pieceN);
-            for (int i = 0, j = 0, k; i < polyN; i++)
+            temporalDim = pieceN; // 时间维度等于子段数量
+            spatialDim = 0; // 空间自由度维数，后续累加计算
+            vPolyIdx.resize(pieceN - 1); // 对内层子段对应的 V 多面体索引映射
+            hPolyIdx.resize(pieceN); // 每个子段对应的 H 多面体索引映射
+            for (int i = 0, j = 0, k; i < polyN; i++) // 展开子段/多面体索引并计算 spatialDim
             {
-                k = pieceIdx(i);
+                k = pieceIdx(i); // 第 i 个多面体包含的子段数量
                 for (int l = 0; l < k; l++, j++)
                 {
-                    if (l < k - 1)
+                    if (l < k - 1) // 对于非末尾的内层子段，使用偶数索引的 V 多面体表示（2*i）
                     {
-                        vPolyIdx(j) = 2 * i;
-                        spatialDim += vPolytopes[2 * i].cols();
+                        vPolyIdx(j) = 2 * i; // 映射到对应的 V 多面体索引
+                        spatialDim += vPolytopes[2 * i].cols(); // 累加该 V 多面体的顶点数量作为空间自由度
                     }
-                    else if (i < polyN - 1)
+                    else if (i < polyN - 1) // 若为段中最后一个子段（且不是最终多面体），使用重叠的 V 多面体
                     {
-                        vPolyIdx(j) = 2 * i + 1;
-                        spatialDim += vPolytopes[2 * i + 1].cols();
+                        vPolyIdx(j) = 2 * i + 1; // 映射到重叠（overlap）V 多面体索引
+                        spatialDim += vPolytopes[2 * i + 1].cols(); // 累加其顶点数
                     }
-                    hPolyIdx(j) = i;
+                    hPolyIdx(j) = i; // 记录该子段对应的 H 多面体索引
                 }
             }
 
-            // Setup for MINCO_S3NU, FlatnessMap, and L-BFGS solver
-            minco.setConditions(headPVA, tailPVA, pieceN);
-            flatmap.reset(physicalPm(0), physicalPm(1), physicalPm(2),
+            // 配置 MINCO、FlatnessMap 以及后续优化器所需的初始条件
+            minco.setConditions(headPVA, tailPVA, pieceN); // 将边界条件和子段数传给 MINCO
+            flatmap.reset(physicalPm(0), physicalPm(1), physicalPm(2), // 用物理参数初始化平展映射模型
                           physicalPm(3), physicalPm(4), physicalPm(5));
 
-            // Allocate temp variables
-            points.resize(3, pieceN - 1);
-            times.resize(pieceN);
-            gradByPoints.resize(3, pieceN - 1);
-            gradByTimes.resize(pieceN);
-            partialGradByCoeffs.resize(6 * pieceN, 3);
-            partialGradByTimes.resize(pieceN);
+            // 根据计算得到的 pieceN 和 spatialDim 分配临时变量的尺寸
+            points.resize(3, pieceN - 1); // 内部节点点坐标（子段间的内侧点）
+            times.resize(pieceN); // 每个子段的时间分配
+            gradByPoints.resize(3, pieceN - 1); // 关于内点的梯度
+            gradByTimes.resize(pieceN); // 关于时间分配的梯度
+            partialGradByCoeffs.resize(6 * pieceN, 3); // 关于多项式系数的部分梯度（每段 6 行）
+            partialGradByTimes.resize(pieceN); // 关于时间的部分梯度
 
-            return true;
+            return true; // setup 成功
         }
 
         inline double optimize(Trajectory<5> &traj,

@@ -211,33 +211,42 @@ public:
 
                 traj.clear(); // 清空当前轨迹，准备写入新的结果
 
-                if (!gcopter.setup(config.weightT, // 使用权重参数初始化优化器
+                // 计时：3a) 后端轨迹生成（gcopter.setup）
+                auto t_setup_start = std::chrono::steady_clock::now();
+                bool setup_ok = gcopter.setup(config.weightT, // 使用权重参数初始化优化器
                                    iniState, finState, // 初始与目标状态
                                    hPolys, INFINITY, // 传入多面体约束与时间上限（这里为无限制）
                                    config.smoothingEps, // 平滑参数
                                    quadratureRes, // 积分分辨率
                                    magnitudeBounds, // 动力学约束
                                    penaltyWeights, // 代价权重
-                                   physicalParams)) // 物理参数
+                                   physicalParams); // 物理参数
+                auto t_setup_end = std::chrono::steady_clock::now();
+                double t_setup_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t_setup_end - t_setup_start).count();
+                double frontend_ms = t_plan_ms + t_cover_ms; // 前端总耗时（路径搜索 + 走廊生成）
+
+                if (!setup_ok)
                 {
+                    ROS_WARN_STREAM("gcopter.setup failed. frontend(ms): " << frontend_ms << ", setup(ms): " << t_setup_ms);
                     return; // setup 失败则退出规划
                 }
 
-                // 计时：3) MINCO + 无约束优化（gcopter.optimize）
+                // 计时：3b) 后端轨迹优化（gcopter.optimize）
                 auto t_opt_start = std::chrono::steady_clock::now();
                 double opt_cost = gcopter.optimize(traj, config.relCostTol); // 返回最终代价（或 INFINITY 表示失败）
                 auto t_opt_end = std::chrono::steady_clock::now();
                 double t_opt_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t_opt_end - t_opt_start).count();
                 int opt_iters = gcopter.getLastOptimizeIters(); // 从优化器回调获取迭代次数（若支持）
 
-                if (std::isinf(opt_cost)) // 运行优化器并检查是否返回无穷（失败）
+                if (std::isinf(opt_cost)) // 优化失败
                 {
-                    ROS_WARN_STREAM("gcopter.optimize failed (cost=INF). planPath(ms): " << t_plan_ms << ", convexCover(ms): " << t_cover_ms << ", optimize(ms): " << t_opt_ms << ", iters: " << opt_iters);
+                    ROS_WARN_STREAM("gcopter.optimize failed (cost=INF). frontend(ms): " << frontend_ms << ", setup(ms): " << t_setup_ms << ", optimize(ms): " << t_opt_ms << ", iters: " << opt_iters);
                     return; // 优化失败则退出
                 }
                 else
                 {
-                    ROS_INFO_STREAM("Timing (ms) - planPath: " << t_plan_ms << ", convexCover: " << t_cover_ms << ", optimize: " << t_opt_ms << ", optimize_iters: " << opt_iters);
+                    ROS_INFO("Timing (ms) - frontend(path+corridor): %.3f, setup(trajectory gen): %.3f, optimize(trajectory opt): %.3f, optimize_iters: %d",
+                             frontend_ms, t_setup_ms, t_opt_ms, opt_iters);
                 }
 
                 if (traj.getPieceNum() > 0) // 若优化成功并生成了轨迹片段
