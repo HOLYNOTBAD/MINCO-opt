@@ -680,14 +680,14 @@ def plan_tube_rrt_star_2d(
         nodes=[root],
         min_dis=float(np.linalg.norm(start_pos - goal_pos)),
         max_radius=15.0,
-        min_radius=0.05,
+        min_radius=0.2,
         use_int_vol=bool(setting.get("useIntVol", False)),
         cost_int_vol=float(setting.get("costIntVol", 0.0)),
     )
 
     goal_bias = float(setting.get("GoalBias", 1.0))
     max_iterations = int(setting.get("MaxIterations", 2000))
-    continue_after_goal_reached = bool(setting.get("ContinueAfterGoalReached", False))
+    continue_after_goal_reached = bool(setting.get("ContinueAfterGoalReached", True))
     max_num_tree_nodes = int(setting.get("MaxNumTreeNodes", 10_000))
     delta = float(setting.get("MaxConnectionDistance", 5.0)) # 最大步长
 
@@ -809,14 +809,14 @@ def visualize_tube_rrt_result_2d(
             alpha=0.5,
         )
 
-    # # 2. 画搜索树
-    # if show_tree and (tree is not None):
-    #     for node in tree.nodes:
-    #         if node.parent_index is None:
-    #             continue
-    #         px, py = node.x_parent, node.y_parent
-    #         x, y = node.x, node.y
-    #         ax.plot([px, x], [py, y], linewidth=0.5)
+    # 2. 画搜索树
+    if show_tree and (tree is not None):
+        for node in tree.nodes:
+            if node.parent_index is None:
+                continue
+            px, py = node.x_parent, node.y_parent
+            x, y = node.x, node.y
+            ax.plot([px, x], [py, y], linewidth=0.5)
 
     # 3. 画最终路径
     if path is not None and path.size > 0:

@@ -1,48 +1,92 @@
 import numpy as np
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
+import sys
+import os
 
-# --------------------------
-# 给定起点、终点、球走廊
-# --------------------------
-p0 = np.array([0.0, 0.0])
+# 添加 tubeRRTstar 路径
+sys.path.append(os.path.join(os.path.dirname(__file__), 'tubeRRTstar'))
+
+from tube_rrt_star_2d import (
+    SimpleOccupancyMap2D,
+    plan_tube_rrt_star_2d,
+)
+
+# ==========================================
+# 1. 使用 Tube-RRT* 生成初始路径和走廊
+# ==========================================
+
+def build_test_map(start, goal):
+    """
+    构造一个简单的 2D 栅格地图:
+        - 100x100 的空间
+        - 中间放几条障碍墙
+    """
+    nx, ny = 100, 100
+    grid = np.zeros((nx, ny), dtype=bool)
+
+    # 障碍墙密度
+    wall_density = 0.01    # 随机放置障碍墙
+    for i in range(nx):
+        for j in range(ny): 
+            if np.random.rand() < wall_density: # 同时在起点和终点附近的10个格子内没有障碍物
+                if (np.linalg.norm(np.array([i * 0.2, j * 0.2]) - start) > 3.0 and
+                    np.linalg.norm(np.array([i * 0.2, j * 0.2]) - goal) > 3.0):
+                    grid[i, j] = True
+
+    resolution = 0.2
+    origin = np.array([0.0, 0.0])
+
+    return SimpleOccupancyMap2D(grid, resolution, origin)
+
+# RRT* 参数
+start_pos = np.array([2.0, 2.0])
+goal_pos = np.array([18.0, 18.0])
+map2d = build_test_map(start_pos, goal_pos)
+
+setting = {
+    "TubeRadius": 0.5,
+    "useIntVol": True,
+    "costIntVol": 1.0,
+    "GoalBias": 3.0,
+    "ContinueAfterGoalReached": True,
+    "MaxNumTreeNodes": 3000,
+    "MaxIterations": 1000,
+    "MaxConnectionDistance": 3.0,
+    "xLim": [0.0, 20.0],
+    "yLim": [0.0, 20.0],
+}
+
+print("Running Tube-RRT*...")
+path, tree = plan_tube_rrt_star_2d(start_pos, goal_pos, map2d, setting)
+
+if path is None or path.shape[0] < 2:
+    print("RRT* failed to find a path. Using default linear initialization.")
+    p0 = start_pos
+    pf = goal_pos
+    n = 4
+    oc_list = np.linspace(p0, pf, n+1)[1:-1]
+    r_list = np.ones(n-1)
+else:
+    print(f"RRT* found path with {path.shape[0]} nodes.")
+    # path is [x, y, radius]
+    p0 = path[0, :2]
+    pf = path[-1, :2]
+    
+    # oc_list are the centers of intermediate balls
+    oc_list = path[1:-1, :2]
+    # r_list are the radii
+    r_list = path[1:-1, 2]
+    
+    n = len(oc_list) + 1 
+
+# Initial velocities/accelerations
 v0 = np.array([0.0, 0.0])
 a0 = np.array([0.0, 0.0])
-
-pf = np.array([4.0, 2.0])
 vf = np.array([0.0, 0.0])
 af = np.array([0.0, 0.0])
 
-# 多段设置：n 段多项式，n-1 个球形走廊
-n = 10  # 可修改为任意大于等于2的整数
-
-# === 球心与半径的配置（可自定义） ===
-# 你可以在这里直接指定 oc_list 和 r_list，例如：
-oc_list = np.array([[1.0, 1], [2.5, 1.0]])  # 对于 n=3，应包含 n-1=2 个球心
-r_list  = np.array([0.8, 1.0])
-# 如果不想自定义，请保持注释，脚本会使用默认配置（起点-终点间等间距）
-
-try:
-    oc_list  # 如果用户在上面定义了 oc_list，则保留
-except NameError:
-    oc_list = np.linspace(p0, pf, n+1)[1:-1]  # 默认：均匀分布的中间点
-
-oc_list = np.asarray(oc_list)
-if oc_list.shape != (n-1, 2):
-    print(f"Warning: oc_list shape {oc_list.shape} 不匹配 n-1={n-1}; 使用默认均匀分布。")
-    oc_list = np.linspace(p0, pf, n+1)[1:-1]
-
-try:
-    r_list
-except NameError:
-    r_list = np.full(n-1, 1.0)
-
-r_list = np.asarray(r_list)
-if r_list.shape != (n-1,):
-    print(f"Warning: r_list shape {r_list.shape} 不匹配 n-1={n-1}; 使用默认半径=1.0。")
-    r_list = np.full(n-1, 1.0)
-
-# 现在 oc_list 和 r_list 是可以自定义的，且不会强制它们共线
+print(f"Optimization with n={n} segments.")
 
 
 # -------------------------------------------------------------------
@@ -230,7 +274,18 @@ def sample_segment(coeff, T, n=100):
 
 
 # 先创建图，用于在 callback 中实时绘制（绘制静态元素：球、起/终点）
-fig, ax = plt.subplots(figsize=(6, 6))
+fig, ax = plt.subplots(figsize=(8, 8))
+
+# 绘制地图障碍物
+if 'map2d' in globals() and isinstance(map2d, SimpleOccupancyMap2D):
+    grid = map2d.grid
+    nx, ny = grid.shape
+    res = map2d.resolution
+    ox, oy = map2d.origin
+    xmin, xmax = ox, ox + nx * res
+    ymin, ymax = oy, oy + ny * res
+    ax.imshow(grid.T, origin="lower", extent=(xmin, xmax, ymin, ymax), cmap="gray_r", alpha=0.5)
+
 # 画球（背景）：对每个 oc_list/r_list 循环绘制
 theta = np.linspace(0, 2 * np.pi, 200)
 for i_oc, rr in zip(oc_list, r_list):
@@ -365,8 +420,8 @@ ax.plot(traj[:, 0], traj[:, 1], color='purple', linewidth=3, label='final_traj',
 # 保证图像外观（若之前已设置过，这些也不会有害）
 ax.set_aspect('equal')
 ax.grid(True)
-ax.set_xlim(-1, 5.5)
-ax.set_ylim(-1, 4)
+ax.set_xlim(0, 20)
+ax.set_ylim(0, 20)
 ax.set_xlabel('X')
 ax.set_ylabel('Y')
 ax.set_title(f'{n}-segment MINCO-style trajectory (C^4 at waypoints)')
