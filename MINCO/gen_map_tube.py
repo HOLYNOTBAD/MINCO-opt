@@ -36,6 +36,67 @@ except Exception as e:
 import matplotlib.pyplot as plt
 
 
+def calculate_circle_intersections(c1, r1, c2, r2):
+    """
+    计算两个圆的交点。
+    c1, c2: (x, y) 中心点
+    r1, r2: 半径
+    返回交点列表 [(x1,y1), (x2,y2)] 或空列表
+    """
+    x1, y1 = c1
+    x2, y2 = c2
+    d = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+    
+    if d > r1 + r2 or d < abs(r1 - r2) or d == 0:
+        return []
+    
+    # 计算交点
+    a = (r1**2 - r2**2 + d**2) / (2 * d)
+    h = np.sqrt(r1**2 - a**2)
+    
+    xm = x1 + a * (x2 - x1) / d
+    ym = y1 + a * (y2 - y1) / d
+    
+    xs1 = xm + h * (y2 - y1) / d
+    ys1 = ym - h * (x2 - x1) / d
+    xs2 = xm - h * (y2 - y1) / d
+    ys2 = ym + h * (x2 - x1) / d
+    
+    return [(xs1, ys1), (xs2, ys2)]
+
+
+def generate_tube_boundaries(path):
+    """
+    生成tube的边界点，通过计算相邻球体的交点。
+    path: 完整的路径数组 [x, y, radius]
+    返回左边界和右边界的点列表。
+    """
+    if len(path) < 2:
+        return [], []
+    
+    left_boundary = []
+    right_boundary = []
+    
+    for i in range(len(path) - 1):
+        c1 = path[i, :2]
+        r1 = path[i, 2]
+        c2 = path[i+1, :2]
+        r2 = path[i+1, 2]
+        
+        intersections = calculate_circle_intersections(c1, r1, c2, r2)
+        if len(intersections) == 2:
+            # 简单排序：假设第一个点是左边界，第二个是右边界
+            p1, p2 = intersections
+            left_boundary.append(p1)
+            right_boundary.append(p2)
+        elif len(intersections) == 1:
+            # 相切，只有一个点
+            left_boundary.append(intersections[0])
+            right_boundary.append(intersections[0])
+    
+    return left_boundary, right_boundary
+
+
 def build_test_map(start, goal, nx=100, ny=100, resolution=0.2, wall_density=0.01, safe_radius=3.0):
     grid = np.zeros((nx, ny), dtype=bool)
     for ix in range(nx):
@@ -59,8 +120,8 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
             "GoalBias": 3.0,
             "ContinueAfterGoalReached": True,
             "MaxNumTreeNodes": 3000,
-            "MaxIterations": 1000,
-            "MaxConnectionDistance": 3.0,
+            "MaxIterations": 5000,
+            "MaxConnectionDistance": 1.5,  # 减少连接距离以减少重叠
             "xLim": [0.0, 20.0],
             "yLim": [0.0, 20.0],
         }
@@ -78,9 +139,13 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
     if path.shape[0] <= 2:
         oc_list = np.empty((0, 2))
         r_list = np.empty((0,))
+        left_boundary = []
+        right_boundary = []
     else:
         oc_list = path[1:-1, :2].astype(float)
         r_list = path[1:-1, 2].astype(float)
+        # 生成tube边界（使用完整路径）
+        left_boundary, right_boundary = generate_tube_boundaries(path)
 
     # ensure out folder exists
     out_dir = os.path.dirname(out_npz)
@@ -104,7 +169,9 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
                         path=path,
                         grid=grid,
                         resolution=resolution,
-                        origin=origin)
+                        origin=origin,
+                        left_boundary=np.array(left_boundary),
+                        right_boundary=np.array(right_boundary))
 
     if out_png:
         out_png_dir = os.path.dirname(out_png)
@@ -132,13 +199,22 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
         # 画路径中心线
         path_xy = path[:, :2]
         ax.plot(path_xy[:, 0], path_xy[:, 1], '-r', linewidth=2.0)
-        # 画每个球
+        # 画每个球（包括start和goal）
         theta = np.linspace(0, 2*np.pi, 120)
-        for (c, rr) in zip(oc_list, r_list):
+        for i in range(len(path)):
+            c = path[i, :2]
+            rr = path[i, 2]
             xc = c[0] + rr * np.cos(theta)
             yc = c[1] + rr * np.sin(theta)
             ax.plot(xc, yc, '-b', linewidth=1.0)
             ax.fill(xc, yc, color='b', alpha=0.15)
+        # 画tube边界
+        if len(left_boundary) > 1:
+            lb_x, lb_y = zip(*left_boundary)
+            ax.plot(lb_x, lb_y, '-g', linewidth=2.0, label='Left Boundary')
+        if len(right_boundary) > 1:
+            rb_x, rb_y = zip(*right_boundary)
+            ax.plot(rb_x, rb_y, '-m', linewidth=2.0, label='Right Boundary')
         ax.scatter(start[0], start[1], s=60, marker='o', color='g', label='start')
         ax.scatter(goal[0], goal[1], s=60, marker='*', color='r', label='goal')
         ax.set_aspect('equal')
@@ -153,7 +229,7 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
         fig.savefig(out_png, dpi=150)
         plt.close(fig)
 
-    return oc_list, r_list, path
+    return oc_list, r_list, path, left_boundary, right_boundary
 
 
 if __name__ == '__main__':
@@ -166,5 +242,5 @@ if __name__ == '__main__':
 
     start = np.fromstring(args.start, sep=',')
     goal = np.fromstring(args.goal, sep=',')
-    oc_list, r_list, path = run_tube_rrt_and_save(start, goal, args.out, args.png)
+    oc_list, r_list, path, left_boundary, right_boundary = run_tube_rrt_and_save(start, goal, args.out, args.png)
     print('Saved.', args.out, args.png)

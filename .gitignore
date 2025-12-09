@@ -2,3 +2,4 @@
 build/
 devel/
 .marscode/
+MINCO/__pycache__/

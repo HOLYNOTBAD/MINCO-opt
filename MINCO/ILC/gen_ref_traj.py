@@ -4,8 +4,26 @@ import matplotlib.pyplot as plt
 import sys
 import os
 
-# 添加 tubeRRTstar 路径
-sys.path.append(os.path.join(os.path.dirname(__file__), 'tubeRRTstar'))
+# 尝试把 tubeRRTstar 模块的目录加入到 sys.path（支持脚本位于 ILC 子目录的情况）
+base_dir = os.path.dirname(__file__)
+candidate_dirs = [
+    os.path.join(base_dir, 'tubeRRTstar'),
+    os.path.join(base_dir, '..', 'tubeRRTstar'),
+    os.path.join(base_dir, '..', '..', 'tubeRRTstar'),
+    os.path.join(base_dir, '..', 'MINCO', 'tubeRRTstar'),
+]
+found_dir = None
+for d in candidate_dirs:
+    dp = os.path.abspath(d)
+    if os.path.isdir(dp):
+        found_dir = dp
+        break
+
+if found_dir is None:
+    # 仍然尝试原始相对路径，最终让 import 抛出更清晰的错误
+    sys.path.append(os.path.join(base_dir, 'tubeRRTstar'))
+else:
+    sys.path.insert(0, found_dir)
 
 from tube_rrt_star_2D import (
     SimpleOccupancyMap2D,
@@ -13,36 +31,8 @@ from tube_rrt_star_2D import (
 )
 
 # ==========================================
-# 1. 使用 Tube-RRT* 生成初始路径和走廊
+# 1. 从MINCO/gen_map_tube/tube_corridor.npz 中加载地图和走廊
 # ==========================================
-
-def build_test_map(start, goal):
-    """
-    构造一个简单的 2D 栅格地图:
-        - 100x100 的空间
-        - 中间放几条障碍墙
-    """
-    nx, ny = 100, 100
-    grid = np.zeros((nx, ny), dtype=bool)
-
-    # 障碍墙密度
-    wall_density = 0.01    # 随机放置障碍墙
-    for i in range(nx):
-        for j in range(ny): 
-            if np.random.rand() < wall_density: # 同时在起点和终点附近的10个格子内没有障碍物
-                if (np.linalg.norm(np.array([i * 0.2, j * 0.2]) - start) > 3.0 and
-                    np.linalg.norm(np.array([i * 0.2, j * 0.2]) - goal) > 3.0):
-                    grid[i, j] = True
-
-    resolution = 0.2
-    origin = np.array([0.0, 0.0])
-
-    return SimpleOccupancyMap2D(grid, resolution, origin)
-
-# RRT* 参数
-start_pos = np.array([2.0, 2.0])
-goal_pos = np.array([18.0, 18.0])
-map2d = build_test_map(start_pos, goal_pos)
 
 setting = {
     "TubeRadius": 0.5,
@@ -57,28 +47,48 @@ setting = {
     "yLim": [0.0, 20.0],
 }
 
-print("Running Tube-RRT*...")
-path, tree = plan_tube_rrt_star_2d(start_pos, goal_pos, map2d, setting)
+# 首先尝试从生成脚本的输出 npz 中加载走廊（优先），请根据实际路径调整
+npz_path_candidates = [
+    os.path.join(os.path.dirname(__file__), '..', '..', 'MINCO', 'gen_map_tube','tube_corridor.npz'),
+]
+found_npz = None
+for p in npz_path_candidates:
+    if os.path.isfile(p):
+        found_npz = p
+        break
 
-if path is None or path.shape[0] < 2:
-    print("RRT* failed to find a path. Using default linear initialization.")
-    p0 = start_pos
-    pf = goal_pos
-    n = 4
-    oc_list = np.linspace(p0, pf, n+1)[1:-1]
-    r_list = np.ones(n-1)
-else:
-    print(f"RRT* found path with {path.shape[0]} nodes.")
-    # path is [x, y, radius]
+if found_npz is not None:
+    # 严格假定 npz 中包含所需字段：grid, resolution, origin, oc_list, r_list, path
+    print(f"Loading corridor (strict) from {found_npz}")
+    data = np.load(found_npz)
+    # 地图栅格信息
+    grid = np.asarray(data['grid'])
+    resolution = float(data['resolution'])
+    origin = np.asarray(data['origin'], dtype=float)
+    # 兼容 origin 为标量或长度1的情况
+    if origin.ndim == 0 or origin.size == 1:
+        origin = np.array([float(origin), 0.0])
+    map2d = SimpleOccupancyMap2D(grid.astype(bool), resolution, origin)
+    print(f"Loaded occupancy grid from {found_npz} (shape={grid.shape}, res={resolution})")
+
+    # 走廊数据
+    path = np.asarray(data['path'])
+    oc_list = np.asarray(data['oc_list'])
+    r_list = np.asarray(data['r_list'])
+    left_boundary = data['left_boundary'] if 'left_boundary' in data else None
+    right_boundary = data['right_boundary'] if 'right_boundary' in data else None
+
+    # endpoints 
     p0 = path[0, :2]
     pf = path[-1, :2]
-    
-    # oc_list are the centers of intermediate balls
-    oc_list = path[1:-1, :2]
-    # r_list are the radii
-    r_list = path[1:-1, 2]
-    
-    n = len(oc_list) + 1 
+
+    n = len(oc_list) + 1
+    print(f"Loaded corridor: {len(oc_list)} intermediate balls, n={n}")
+    tree = None
+else:
+    # 没找到npz文件，请用gen_map_tube.py生成
+    tried = ', '.join([os.path.abspath(p) for p in npz_path_candidates])
+    raise RuntimeError(f"No corridor .npz found. Tried: {tried}")
 
 # Initial velocities/accelerations
 v0 = np.array([0.0, 0.0])
@@ -209,7 +219,7 @@ def jerk_energy(coeff, T, N=80):
 
 
 # -------------------------------------------------------------------
-#  代价函数：F(ξ, τ) = 两段 jerk 能量之和 + 0.1 * np.sum(T_list)
+#  代价函数：F(ξ, τ) = 两段 jerk 能量之和
 # -------------------------------------------------------------------
 def minco_cost(x):
     # x = [xi (2*(n-1)), tau (n)]
@@ -233,8 +243,8 @@ def minco_cost(x):
         J += jerk_energy(coeffs[i], T_list[i])
 
     # 时间惩罚
-    time_penalty = np.sum(T_list)
-    return J + time_penalty 
+    time_penalty = 1.0 * np.sum(T_list)
+    return J + time_penalty
 
 
 # -----------------------------
@@ -293,6 +303,7 @@ for i_oc, rr in zip(oc_list, r_list):
     yc = i_oc[1] + rr * np.sin(theta)
     ax.fill(xc, yc, color='orange', alpha=0.3)
     ax.plot(xc, yc, color='orange')
+
 # 起点/终点
 ax.scatter(p0[0], p0[1], color='green', s=80)
 ax.text(p0[0] + 0.1, p0[1] + 0.1, "start")
@@ -301,6 +312,9 @@ ax.text(pf[0] + 0.1, pf[1] + 0.1, "goal")
 
 # 历史轨迹列表（每次迭代的轨迹）
 traj_history = []
+# 记录每次迭代的能量与总时间
+energy_history = []
+time_history = []
 # 保存动态绘制的 Line2D 对象，便于后续移除
 dynamic_lines = []
 # 保存每次迭代的关节点（q）的绘图对象
@@ -323,7 +337,6 @@ def opt_callback(xk):
 
     traj_history.append(trajk)
 
-    # 记录并打印每一次迭代的关键信息：迭代轮次、q、T1、T2
     # 注意：opt_callback 也可能在调用前手动调用一次（用于绘制初始轨迹）
     try:
         qv = map_to_ball(xk[:2 * (n - 1)])
@@ -334,11 +347,26 @@ def opt_callback(xk):
     # 保存 q 值用于绘制小点（qv shape = (n-1,2)）
     if qv is not None:
         q_history.append(qv)
+        # 计算当前迭代的 cost 分解：总 jerk 能量和总时间
+        try:
+            # 复用 compute_n_segment_coeff_2d 与 jerk_energy
+            coeffs_iter = compute_n_segment_coeff_2d(p0, v0, a0, qv, pf, vf, af, T_list_print)
+            J_iter = 0.0
+            for ii in range(len(T_list_print)):
+                J_iter += jerk_energy(coeffs_iter[ii], T_list_print[ii])
+            energy_history.append(J_iter)
+            time_history.append(np.sum(T_list_print))
+        except Exception:
+            # 若数值问题导致无法计算能量，则记录 NaN
+            energy_history.append(np.nan)
+            time_history.append(np.sum(T_list_print) if T_list_print is not None else np.nan)
     # 打印信息（显示所有段时间）
-    print(f"Iter {len(q_history)-1}: q={qv}, T={T_list_print}")
+    # print(f"Iter {len(q_history)-1}: q={qv}, T={T_list_print}")
     # 增加迭代计数
     globals()['iter_count'] = len(q_history)
-
+    # 轨迹总时间
+    sum_T = np.sum(T_list_print)
+    print(f"Iter {globals()['iter_count']-1}: total_time={sum_T:.3f}")
     # 清除之前绘制的历史轨迹线和历史点（但保留静态元素，如球、起点、终点）
     for ln in dynamic_lines:
         try:
@@ -378,12 +406,12 @@ def opt_callback(xk):
         dynamic_points.append(pt)
 
     plt.draw()
-    plt.pause(0.01)
+    plt.pause(0.0001)
 
 # 先画初始轨迹（可选）
 opt_callback(x0)
 # 优化器每迭代一次都会调用 opt_callback
-res = minimize(minco_cost, x0, method='L-BFGS-B', callback=opt_callback)
+res = minimize(minco_cost, x0, method='L-BFGS-B', callback=opt_callback, options={'maxiter': 10})
 
 print("===============================Final==================================")
 
@@ -407,7 +435,51 @@ for i in range(len(T_opt)):
 traj = np.vstack(segs)
 
 
+
+# 保存优化后的轨迹到 ILC 文件夹（NPZ 格式，包含轨迹点与分段信息）
+try:
+    ilc_dir = os.path.join(os.path.dirname(__file__), 'ref_traj')
+    os.makedirs(ilc_dir, exist_ok=True)
+    save_path = os.path.join(ilc_dir, 'optimized_traj.npz')
+    
+    save_dict = {
+        'traj': traj,
+        'q_opt': q_opt,
+        'T_opt': T_opt,
+        'p0': p0,
+        'pf': pf
+    }
+    if 'left_boundary' in globals() and left_boundary is not None:
+        save_dict['left_boundary'] = left_boundary
+    if 'right_boundary' in globals() and right_boundary is not None:
+        save_dict['right_boundary'] = right_boundary
+        
+    np.savez_compressed(save_path, **save_dict)
+    print(f"Saved optimized trajectory to {save_path}")
+except Exception as e:
+    print("Failed to save optimized trajectory:", e)
+
 # ================= 可视化 =======================
+# 清除优化过程中的历史轨迹和点，只保留最终结果
+for ln in dynamic_lines:
+    try:
+        ln.remove()
+    except Exception:
+        pass
+dynamic_lines.clear()
+for pt in dynamic_points:
+    try:
+        pt.remove()
+    except Exception:
+        pass
+dynamic_points.clear()
+
+# 绘制 Tube 边界
+if 'left_boundary' in globals() and left_boundary is not None:
+    ax.plot(left_boundary[:, 0], left_boundary[:, 1], 'b-', linewidth=1.5, label='Tube Boundary')
+if 'right_boundary' in globals() and right_boundary is not None:
+    ax.plot(right_boundary[:, 0], right_boundary[:, 1], 'b-', linewidth=1.5)
+
 # 在回调绘制的图上覆盖最终结果
 # 绘制最终优化得到的中间点 q_opt（覆盖在历史轨迹上）
 ax.scatter(q_opt[:, 0], q_opt[:, 1], color='blue', s=80, zorder=5)
@@ -427,4 +499,51 @@ ax.set_ylabel('Y')
 ax.set_title(f'{n}-segment MINCO-style trajectory (C^4 at waypoints)')
 ax.legend(loc='upper left')
 plt.tight_layout()
+# 在展示主图之前，先保存迭代历史图（如果有），以防用户在 GUI 中中断
+try:
+    if len(energy_history) > 0 or len(time_history) > 0:
+        fig2, ax1 = plt.subplots(figsize=(8, 4))
+        iters = np.arange(len(energy_history))
+        ax1.plot(iters, energy_history, color='tab:purple', marker='o', label='Total Jerk Energy')
+        ax1.set_xlabel('Iteration')
+        ax1.set_ylabel('Total Jerk Energy', color='tab:purple')
+        ax1.tick_params(axis='y', labelcolor='tab:purple')
+
+        ax2 = ax1.twinx()
+        ax2.plot(iters, time_history, color='tab:green', marker='x', label='Total Flight Time')
+        ax2.set_ylabel('Total Flight Time (s)', color='tab:green')
+        ax2.tick_params(axis='y', labelcolor='tab:green')
+
+        lines_1, labels_1 = ax1.get_legend_handles_labels()
+        lines_2, labels_2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+        ax1.set_title('MINCO Iteration History: Jerk Energy & Flight Time')
+        plt.tight_layout()
+        # 保存两种格式，方便离线查看（写入之前创建的 ref_traj 目录）
+        try:
+            out_png = os.path.join(ilc_dir, 'iter_history.png')
+        except NameError:
+            # 如果 ilc_dir 未定义（极端情况），回退到相对路径
+            out_png = os.path.join('ILC', 'ref_traj', 'iter_history.png')
+        os.makedirs(os.path.dirname(out_png), exist_ok=True)
+        fig2.savefig(out_png, dpi=150)
+except Exception as e:
+    print("Failed to auto-save iteration history before show:", e)
+
+# 保存主轨迹图
+try:
+    try:
+        out_traj_png = os.path.join(ilc_dir, 'optimized_traj_plot.png')
+    except NameError:
+        out_traj_png = os.path.join('ILC', 'ref_traj', 'optimized_traj_plot.png')
+    
+    os.makedirs(os.path.dirname(out_traj_png), exist_ok=True)
+    fig.savefig(out_traj_png, dpi=150)
+    print(f"Saved optimized trajectory plot to {out_traj_png}")
+except Exception as e:
+    print("Failed to save optimized trajectory plot:", e)
+
 plt.show()
+
+# 画出ILC/ref_traj目录下的最终轨迹文件optimized_traj.npz所记录的轨迹
+

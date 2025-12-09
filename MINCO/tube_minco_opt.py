@@ -223,7 +223,7 @@ def minco_cost(x):
         J += jerk_energy(coeffs[i], T_list[i])
 
     # 时间惩罚
-    time_penalty = 0.1 * np.sum(T_list)
+    time_penalty = 1.0 * np.sum(T_list)
     return J + time_penalty
 
 
@@ -292,6 +292,9 @@ ax.text(pf[0] + 0.1, pf[1] + 0.1, "goal")
 
 # 历史轨迹列表（每次迭代的轨迹）
 traj_history = []
+# 记录每次迭代的能量与总时间
+energy_history = []
+time_history = []
 # 保存动态绘制的 Line2D 对象，便于后续移除
 dynamic_lines = []
 # 保存每次迭代的关节点（q）的绘图对象
@@ -324,6 +327,19 @@ def opt_callback(xk):
     # 保存 q 值用于绘制小点（qv shape = (n-1,2)）
     if qv is not None:
         q_history.append(qv)
+        # 计算当前迭代的 cost 分解：总 jerk 能量和总时间
+        try:
+            # 复用 compute_n_segment_coeff_2d 与 jerk_energy
+            coeffs_iter = compute_n_segment_coeff_2d(p0, v0, a0, qv, pf, vf, af, T_list_print)
+            J_iter = 0.0
+            for ii in range(len(T_list_print)):
+                J_iter += jerk_energy(coeffs_iter[ii], T_list_print[ii])
+            energy_history.append(J_iter)
+            time_history.append(np.sum(T_list_print))
+        except Exception:
+            # 若数值问题导致无法计算能量，则记录 NaN
+            energy_history.append(np.nan)
+            time_history.append(np.sum(T_list_print) if T_list_print is not None else np.nan)
     # 打印信息（显示所有段时间）
     # print(f"Iter {len(q_history)-1}: q={qv}, T={T_list_print}")
     # 增加迭代计数
@@ -370,7 +386,7 @@ def opt_callback(xk):
         dynamic_points.append(pt)
 
     plt.draw()
-    plt.pause(0.01)
+    plt.pause(0.0001)
 
 # 先画初始轨迹（可选）
 opt_callback(x0)
@@ -419,4 +435,56 @@ ax.set_ylabel('Y')
 ax.set_title(f'{n}-segment MINCO-style trajectory (C^4 at waypoints)')
 ax.legend(loc='upper left')
 plt.tight_layout()
+# 在展示主图之前，先保存迭代历史图（如果有），以防用户在 GUI 中中断
+try:
+    if len(energy_history) > 0 or len(time_history) > 0:
+        fig2, ax1 = plt.subplots(figsize=(8, 4))
+        iters = np.arange(len(energy_history))
+        ax1.plot(iters, energy_history, color='tab:purple', marker='o', label='Total Jerk Energy')
+        ax1.set_xlabel('Iteration')
+        ax1.set_ylabel('Total Jerk Energy', color='tab:purple')
+        ax1.tick_params(axis='y', labelcolor='tab:purple')
+
+        ax2 = ax1.twinx()
+        ax2.plot(iters, time_history, color='tab:green', marker='x', label='Total Flight Time')
+        ax2.set_ylabel('Total Flight Time (s)', color='tab:green')
+        ax2.tick_params(axis='y', labelcolor='tab:green')
+
+        lines_1, labels_1 = ax1.get_legend_handles_labels()
+        lines_2, labels_2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+        ax1.set_title('MINCO Iteration History: Jerk Energy & Flight Time')
+        plt.tight_layout()
+        # 保存两种格式，方便离线查看
+        fig2.savefig('iter_history.png', dpi=150)
+        fig2.savefig('iter_history.pdf', dpi=150)
+except Exception as e:
+    print("Failed to auto-save iteration history before show:", e)
+
 plt.show()
+
+# 绘制迭代历史：总 jerk 能量 和 总飞行时间（两条曲线在同一张图，右侧为时间轴）
+try:
+    if len(energy_history) > 0 or len(time_history) > 0:
+        fig2, ax1 = plt.subplots(figsize=(8, 4))
+        iters = np.arange(len(energy_history))
+        ax1.plot(iters, energy_history, color='tab:purple', marker='o', label='Total Jerk Energy')
+        ax1.set_xlabel('Iteration')
+        ax1.set_ylabel('Total Jerk Energy', color='tab:purple')
+        ax1.tick_params(axis='y', labelcolor='tab:purple')
+
+        ax2 = ax1.twinx()
+        ax2.plot(iters, time_history, color='tab:green', marker='x', label='Total Flight Time')
+        ax2.set_ylabel('Total Flight Time (s)', color='tab:green')
+        ax2.tick_params(axis='y', labelcolor='tab:green')
+
+        # 合并图例
+        lines_1, labels_1 = ax1.get_legend_handles_labels()
+        lines_2, labels_2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
+        ax1.set_title('MINCO Iteration History: Jerk Energy & Flight Time')
+        plt.tight_layout()
+        fig2.savefig('MINCO/minco_opt_data/iter_history.png', dpi=150)
+        plt.show()
+except Exception as e:
+    print("Failed to plot iteration history:", e)
