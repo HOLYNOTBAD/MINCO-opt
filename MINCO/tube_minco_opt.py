@@ -425,6 +425,32 @@ for idx, qp in enumerate(q_opt):
 # 绘制最终轨迹（加粗，颜色与历史轨迹一致但更明显）
 ax.plot(traj[:, 0], traj[:, 1], color='purple', linewidth=3, label='final_traj', zorder=6)
 
+# 确保输出目录存在，保存最终轨迹图与数据（数据格式兼容 tube_corridor.npz 的字段）
+out_dir = os.path.join('MINCO', 'minco_opt_data')
+os.makedirs(out_dir, exist_ok=True)
+try:
+    # 保存当前主图（final trajectory）为 PNG
+    fig.savefig(os.path.join(out_dir, 'final_traj.png'), dpi=150)
+except Exception as e:
+    print('Failed to save final_traj.png:', e)
+
+try:
+    # 保存为压缩 npz，包含与 tube_corridor.npz 一致的字段以及优化结果
+    np.savez_compressed(
+        os.path.join(out_dir, 'minco_result.npz'),
+        grid=grid,
+        resolution=resolution,
+        origin=origin,
+        oc_list=oc_list,
+        r_list=r_list,
+        path=path,
+        traj=traj,
+        q_opt=q_opt,
+        T_opt=T_opt,
+    )
+except Exception as e:
+    print('Failed to save minco_result.npz:', e)
+
 # 保证图像外观（若之前已设置过，这些也不会有害）
 ax.set_aspect('equal')
 ax.grid(True)
@@ -455,9 +481,10 @@ try:
         ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right')
         ax1.set_title('MINCO Iteration History: Jerk Energy & Flight Time')
         plt.tight_layout()
-        # 保存两种格式，方便离线查看
-        fig2.savefig('iter_history.png', dpi=150)
-        fig2.savefig('iter_history.pdf', dpi=150)
+    # 确保输出目录存在，仅保存 PNG 到 MINCO/minco_opt_data（不再保存 PDF）
+    out_dir = os.path.join('MINCO', 'minco_opt_data')
+    os.makedirs(out_dir, exist_ok=True)
+    fig2.savefig(os.path.join(out_dir, 'iter_history.png'), dpi=150)
 except Exception as e:
     print("Failed to auto-save iteration history before show:", e)
 

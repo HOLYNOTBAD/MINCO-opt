@@ -59,7 +59,18 @@ def load_tube_path(filename):
     yd = f_y(t_new)
     bound = f_r(t_new)
     
-    return xd, yd, bound, raw_left_b, raw_right_b
+    # modify bound to converge linearly to 0 from L distance from end
+    L = 10.0  # distance from end to start convergence
+    bound_modified = bound.copy()
+    idx_start = np.where(t_new >= total_dist - L)[0]
+    if len(idx_start) > 0:
+        idx_start = idx_start[0]
+        for i in range(idx_start, len(bound)):
+            ratio = (t_new[i] - (total_dist - L)) / L
+            bound_modified[i] = bound[idx_start] * (1 - ratio)
+        bound_modified[-1] = 0.0  # ensure end point is 0
+    
+    return xd, yd, bound_modified, raw_left_b, raw_right_b
 
 def load_map(filename):
     """
@@ -72,6 +83,76 @@ def load_map(filename):
     if 'grid' in data:
         return data['grid'], data['resolution'], data['origin']
     return None, None, None
+
+
+def plot_tube_bound(xd, yd, bound, raw_left_b=None, raw_right_b=None, save_path=None):
+    """
+    Plot reference path xd, yd, the corridor bounds (using normal offsets by `bound`),
+    and optional raw left/right boundaries if provided.
+    """
+    import matplotlib.pyplot as plt
+    xd = np.asarray(xd)
+    yd = np.asarray(yd)
+    bound = np.asarray(bound)
+
+    # compute tangents and normals
+    dx = np.gradient(xd)
+    dy = np.gradient(yd)
+    norms = np.sqrt(dx**2 + dy**2) + 1e-10
+    nx = -dy / norms
+    ny = dx / norms
+
+    left_x = xd + nx * bound
+    left_y = yd + ny * bound
+    right_x = xd - nx * bound
+    right_y = yd - ny * bound
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.set_aspect('equal')
+    ax.grid(True)
+
+    # plot reference (center) path
+    ax.plot(xd, yd, '--', color='g', linewidth=1.0, label='Reference Path')
+
+    # start and end markers
+    try:
+        ax.scatter(xd[0], yd[0], color='green', s=60, zorder=5)
+        ax.text(xd[0] + 0.02, yd[0] + 0.02, 'start', color='green')
+        ax.scatter(xd[-1], yd[-1], color='magenta', s=60, zorder=5)
+        ax.text(xd[-1] + 0.02, yd[-1] + 0.02, 'end', color='magenta')
+    except Exception:
+        pass
+
+    # plot computed left/right bounds
+    ax.plot(left_x, left_y, color='orange', linewidth=1.2, label='Computed Left Bound')
+    ax.plot(right_x, right_y, color='orange', linewidth=1.2, label='Computed Right Bound')
+
+    # fill corridor
+    try:
+        ax.fill(np.concatenate([left_x, right_x[::-1]]), np.concatenate([left_y, right_y[::-1]]), color='orange', alpha=0.2)
+    except Exception:
+        pass
+
+    # plot raw boundaries if provided
+    if raw_left_b is not None:
+        try:
+            raw_left_b = np.asarray(raw_left_b)
+            ax.plot(raw_left_b[:, 0], raw_left_b[:, 1], 'b.-', linewidth=1.0, label='Raw Left Boundary')
+        except Exception:
+            pass
+    if raw_right_b is not None:
+        try:
+            raw_right_b = np.asarray(raw_right_b)
+            ax.plot(raw_right_b[:, 0], raw_right_b[:, 1], 'b.-', linewidth=1.0, label='Raw Right Boundary')
+        except Exception:
+            pass
+
+    ax.legend()
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    return
 
 def getpoint(x_curr, y_curr, xd, yd, current_idx):
     """
@@ -126,6 +207,13 @@ def main():
     filename = 'MINCO/ILC/ref_traj/optimized_traj.npz'
     print(f"Loading path from {filename}...")
     xd, yd, bound, raw_left_b, raw_right_b = load_tube_path(filename)
+    # 绘制并保存管道与边界到文件
+    try:
+        out_plot = 'MINCO/ILC/ref_traj/combined_bound_plot.png'
+        plot_tube_bound(xd, yd, bound, raw_left_b, raw_right_b, save_path=out_plot)
+        print(f"Saved combined bound plot to {out_plot}")
+    except Exception as e:
+        print('Failed to plot combined bounds:', e)
     
     # Load map
     map_filename = 'MINCO/gen_map_tube/tube_corridor.npz'
@@ -135,11 +223,11 @@ def main():
         print("Failed to load path.")
         return
 
-    current_all = len(xd)
+    current_all = len(xd)   # current_all为路径点总数
     print(f"Path loaded with {current_all} points. Total length approx {np.sum(np.sqrt(np.diff(xd)**2 + np.diff(yd)**2)):.2f}m")
     
-    i_n = 20 # 迭代次数
-    j_n = current_all * 2 # Max points buffer
+    i_n = 100 # 迭代次数
+    j_n = current_all * 2 # 时间步数，预设为路径点数的两倍以确保足够的时间步覆盖路径
     
     # Storage
     y = np.zeros((i_n, j_n + 1))
@@ -182,7 +270,7 @@ def main():
     kp = 1.5
     kd = 1.0
     kp_vl = 0.05
-    tau = 5.0
+    tau = 0.4
     kp_law = 1.0
     kd_law = 0.5
     
@@ -210,13 +298,13 @@ def main():
         v_des = velocity.copy()
         
         while current < current_all and j < j_n:
-            x[i, j] = position[0]
-            y[i, j] = position[1]
+            x[i, j] = position[0]   # x[i,j]是第i次迭代，第j个时间步的x坐标
+            y[i, j] = position[1]   # y[i,j]是第i次迭代，第j个时间步的y坐标
             
-            # getpoint
+            # 这五个量分别是：路径点坐标yp, xp， 下一个路径点坐标yp_next, xp_next， 当前最近路径点索引point
             yp, xp, yp_next, xp_next, point = getpoint(x[i, j], y[i, j], xd, yd, current)
             
-            # Termination condition
+            # Termination condition： close to end point
             dist_end_sq = (xp - xd[-1])**2 + (yp - yd[-1])**2
             if dist_end_sq < 1.0 and current > current_all - 50: # Relaxed condition
                 break
@@ -224,12 +312,12 @@ def main():
             current = point
             l = current
             
-            # Error vector
+            # 误差向量：e_vec-当前位置到最近路径点的向量 e_norm-误差大小 e_value-误差值（距离减去管道半径）
             e_vec = np.array([xp - x[i, j], yp - y[i, j]])
             e_norm = np.linalg.norm(e_vec)
-            e_value = e_norm - bound[l]
+            e_value = e_norm - bound[l] # bound[l]是当前位置对应的管道半径
             
-            # Path convergence term
+            # temp_perp 是垂直控制分量
             temp_perp = kp * e_vec + kd * (e_norm - last_e) * e_vec / (e_norm + 1e-5)
             
             # Store perp control
