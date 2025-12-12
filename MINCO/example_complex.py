@@ -209,7 +209,7 @@ def jerk_energy(coeff, T, N=80):
 
 
 # -------------------------------------------------------------------
-#  代价函数：F(ξ, τ) = 两段 jerk 能量之和
+#  代价函数：F(ξ, τ) = 两段 jerk 能量之和 + 0.1 * np.sum(T_list)
 # -------------------------------------------------------------------
 def minco_cost(x):
     # x = [xi (2*(n-1)), tau (n)]
@@ -233,8 +233,8 @@ def minco_cost(x):
         J += jerk_energy(coeffs[i], T_list[i])
 
     # 时间惩罚
-    time_penalty = 0.1 * np.sum(T_list)
-    return J + time_penalty
+    time_penalty = np.sum(T_list)
+    return J + time_penalty 
 
 
 # -----------------------------
