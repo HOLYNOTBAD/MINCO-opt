@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict
 import numpy as np
 import math
+from scipy.interpolate import BSpline
 
 
 # ================================================================
@@ -756,6 +757,49 @@ def plan_tube_rrt_star_2d(
     return path, tree
 
 
+def generate_b_spline_trajectory(path: np.ndarray, k: int = 3, num_samples: int = 100) -> np.ndarray:
+    """
+    将路径点作为 B 样条控制点，生成平滑的 B 样条曲线。
+    生成的曲线经过起点和终点 (Clamped)。
+    
+    参数:
+        path: (N, D) 路径点数组，通常是 (N, 2) 或 (N, 3)
+        k: B 样条阶数 (degree)，默认 3
+        num_samples: 输出采样点数
+        
+    返回:
+        smoothed_path: (num_samples, D)
+    """
+    path = np.asarray(path)
+    n_points = path.shape[0]
+    
+    if n_points < 2:
+        return path
+        
+    # 如果点数少于 k+1，降低阶数
+    if n_points <= k:
+        k = n_points - 1
+        
+    # 构造 Clamped Knot Vector
+    # 节点向量长度 = n_points + k + 1
+    # 前 k+1 个 0，后 k+1 个 1
+    n_knots = n_points + k + 1
+    t = np.zeros(n_knots)
+    t[-(k+1):] = 1.0
+    
+    # 内部节点均匀分布
+    if n_points > k + 1:
+        internal_count = n_points - k - 1
+        # linspace(0, 1, internal_count + 2) -> [0, ..., 1]
+        # 取中间部分
+        if internal_count > 0:
+            t[k+1 : -(k+1)] = np.linspace(0, 1, internal_count + 2)[1:-1]
+            
+    spl = BSpline(t, path, k)
+    u = np.linspace(0, 1, num_samples)
+    return spl(u)
+
+
 # 在文件顶部可以加上：
 import matplotlib.pyplot as plt
 
@@ -769,6 +813,7 @@ def visualize_tube_rrt_result_2d(
     goal_pos: np.ndarray = None,
     show_tube: bool = True,
     show_tree: bool = True,
+    smoothed_path: np.ndarray = None,
     title: str = "Tube-RRT* 2D Result",
 ):
     """
@@ -777,6 +822,7 @@ def visualize_tube_rrt_result_2d(
         - RRT* 搜索树
         - 最终路径
         - Tube 走廊 (上下边界 + 中心线)
+        - 平滑后的 B 样条路径 (可选)
 
     参数:
         map2d: OccupancyMap2D 对象，若是 SimpleOccupancyMap2D 会自动画出栅格
@@ -785,6 +831,7 @@ def visualize_tube_rrt_result_2d(
         start_pos, goal_pos: 起点终点 (2,)，可选
         show_tube: 是否画 Tube 走廊
         show_tree: 是否画搜索树
+        smoothed_path: (M, D) 平滑后的路径点，可选
     """
     fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -839,7 +886,12 @@ def visualize_tube_rrt_result_2d(
                 ax.plot(up[:, 0], up[:, 1], "-g", linewidth=1.0, label="tube upper")
                 ax.plot(down[:, 0], down[:, 1], "-g", linewidth=1.0, label="tube lower")
 
-    # 5. 起点终点
+    # 5. 画平滑路径
+    if smoothed_path is not None and smoothed_path.size > 0:
+        sp_xy = smoothed_path[:, :2]
+        ax.plot(sp_xy[:, 0], sp_xy[:, 1], "-c", linewidth=2.0, label="B-spline")
+
+    # 6. 起点终点
     if start_pos is not None:
         ax.scatter(start_pos[0], start_pos[1], s=60, marker="o", label="start")
     if goal_pos is not None:

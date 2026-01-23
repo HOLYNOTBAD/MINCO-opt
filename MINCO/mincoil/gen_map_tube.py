@@ -19,9 +19,7 @@ import numpy as np
 # 尝试将本仓库中 MINCO/tubeRRTstar 加入路径，便于导入 tube_rrt_star_2d
 _this_dir = os.path.abspath(os.path.dirname(__file__))
 _candidates = [
-    os.path.join(_this_dir, "tubeRRTstar"),
-    os.path.join(_this_dir, "py", "tubeRRTstar"),
-    os.path.join(_this_dir, "..", "py", "tubeRRTstar"),
+    os.path.join(_this_dir, "..", "tubeRRTstar"),
 ]
 for p in _candidates:
     if os.path.isdir(p) and p not in sys.path:
@@ -29,7 +27,7 @@ for p in _candidates:
         break
 
 try:
-    from tube_rrt_star_2D import SimpleOccupancyMap2D, plan_tube_rrt_star_2d, visualize_tube_rrt_result_2d
+    from tube_rrt_star_2D import SimpleOccupancyMap2D, plan_tube_rrt_star_2d, visualize_tube_rrt_result_2d, generate_b_spline_trajectory
 except Exception as e:
     raise ImportError("无法导入 tube_rrt_star_2d；请确保 py/tubeRRTstar 在仓库中并可 import") from e
 
@@ -152,6 +150,9 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
     if out_dir and not os.path.exists(out_dir):
         os.makedirs(out_dir, exist_ok=True)
 
+    # 生成 B 样条平滑路径
+    smoothed_path = generate_b_spline_trajectory(path[:, :2])
+
     print(f"保存走廊数据到 {out_npz}")
     # 同时保存地图信息（grid / resolution / origin），便于下游脚本直接从 npz 恢复 SimpleOccupancyMap2D
     if isinstance(map2d, SimpleOccupancyMap2D):
@@ -171,7 +172,8 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
                         resolution=resolution,
                         origin=origin,
                         left_boundary=np.array(left_boundary),
-                        right_boundary=np.array(right_boundary))
+                        right_boundary=np.array(right_boundary),
+                        smoothed_path=smoothed_path)
 
     if out_png:
         out_png_dir = os.path.dirname(out_png)
@@ -198,7 +200,12 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
                 ax.plot([px, x], [py, y], linewidth=0.5, color='k', alpha=0.3)
         # 画路径中心线
         path_xy = path[:, :2]
-        ax.plot(path_xy[:, 0], path_xy[:, 1], '-r', linewidth=2.0)
+        ax.plot(path_xy[:, 0], path_xy[:, 1], '-r', linewidth=2.0, label='RRT* Path')
+        
+        # 画平滑后的 B 样条路径
+        if smoothed_path is not None and smoothed_path.size > 0:
+            ax.plot(smoothed_path[:, 0], smoothed_path[:, 1], '-c', linewidth=2.0, label='B-spline')
+
         # 画每个球（包括start和goal）
         theta = np.linspace(0, 2*np.pi, 120)
         for i in range(len(path)):
@@ -234,8 +241,8 @@ def run_tube_rrt_and_save(start, goal, out_npz, out_png=None, setting=None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', '-o', help='输出 npz 路径', default='MINCO/gen_map_tube/tube_corridor.npz')
-    parser.add_argument('--png', help='可视化 png 路径（可选）', default='MINCO/gen_map_tube/tube_corridor.png')
+    parser.add_argument('--out', '-o', help='输出 npz 路径', default='MINCO/mincoil/map_manage/tube_corridor.npz')
+    parser.add_argument('--png', help='可视化 png 路径（可选）', default='MINCO/mincoil/map_manage/tube_corridor.png')
     parser.add_argument('--start', help='起点 x,y', default='2.0,2.0')
     parser.add_argument('--goal', help='终点 x,y', default='18.0,18.0')
     args = parser.parse_args()

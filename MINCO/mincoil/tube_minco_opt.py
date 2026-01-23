@@ -5,9 +5,12 @@ import sys
 import os
 
 # 添加 tubeRRTstar 路径
-sys.path.append(os.path.join(os.path.dirname(__file__), 'tubeRRTstar'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..','tubeRRTstar'))
 
 from tube_rrt_star_2D import SimpleOccupancyMap2D
+
+# 数据保存路径
+data_out_dir = os.path.join(os.path.dirname(__file__),'..','mincoil', 'minco_opt_data')
 
 # ==========================================
 #  Utility Functions 
@@ -131,6 +134,7 @@ class TubeMincoVisualizer:
         self.dynamic_points = []
 
     def setup_plot(self):
+        plt.ion()
         self.fig, self.ax = plt.subplots(figsize=(8, 8))
         
         # 绘制地图障碍物
@@ -163,6 +167,7 @@ class TubeMincoVisualizer:
         self.ax.set_xlabel('X')
         self.ax.set_ylabel('Y')
         self.ax.set_title(f'{self.n}-segment MINCO-style trajectory')
+        plt.show()
 
     def update_plot(self, traj_history, q_history, iter_count, total_time):
         # 清除动态元素
@@ -239,7 +244,7 @@ class TubeMincoVisualizer:
                 ax1.set_title('MINCO Iteration History: Jerk Energy & Flight Time')
                 plt.tight_layout()
                 
-                fig2.savefig(os.path.join(out_dir, 'iter_history.png'), dpi=150)
+                fig2.savefig(os.path.join(data_out_dir, 'iter_history.png'), dpi=150)
             except Exception as e:
                 print("Failed to plot/save iteration history:", e)
 
@@ -274,8 +279,8 @@ class TubeMincoVisualizer:
             ax_v.grid(True)
             plt.tight_layout()
             
-            fig_v.savefig(os.path.join(out_dir, 'velocity_profile.png'), dpi=150)
-            print(f"Velocity profile saved to {os.path.join(out_dir, 'velocity_profile.png')}")
+            fig_v.savefig(os.path.join(data_out_dir, 'velocity_profile.png'), dpi=150)
+            print(f"Velocity profile saved to {os.path.join(data_out_dir, 'velocity_profile.png')}")
             
         except Exception as e:
             print("Failed to plot velocity profile:", e)
@@ -376,7 +381,7 @@ class TubeMincoPlanner:
 
         # 时间惩罚
         time_penalty = 1.0 * np.sum(T_list)
-        return J + time_penalty
+        return J + 100*time_penalty
 
     def traj_from_x(self, x):
         # 1. 提取优化变量：中间点参数 xi 和时间参数 tau
@@ -458,7 +463,7 @@ class TubeMincoPlanner:
         self.opt_callback(x0)
         
         # Optimize
-        res = minimize(self.minco_cost, x0, method='L-BFGS-B', callback=self.opt_callback,options={'maxiter': 10} )
+        res = minimize(self.minco_cost, x0, method='L-BFGS-B', callback=self.opt_callback,options={'maxiter': 300} )
         
         print("===============================Final==================================")
         print("优化结果 x:", res.x)
@@ -485,13 +490,11 @@ class TubeMincoPlanner:
         self.visualizer.visualize_final(q_opt, traj)
         self.save_results(traj, q_opt, T_opt)
         
-        out_dir = os.path.join('MINCO', 'minco_opt_data')
+        out_dir = os.path.join(os.path.dirname(__file__),'..','mincoil', 'minco_opt_data')
         self.visualizer.plot_history(self.energy_history, self.time_history, out_dir)
         self.visualizer.plot_velocity_profile(coeffs_opt, T_opt, out_dir)
         
-
-
-        
+        plt.ioff()
         plt.show()
 
     def save_results(self, traj, q_opt, T_opt):
@@ -520,8 +523,8 @@ class TubeMincoPlanner:
 if __name__ == "__main__":
     # 查找 npz 文件
     npz_path_candidates = [
-        os.path.join(os.path.dirname(__file__), '..','MINCO', 'gen_map_tube','tube_corridor.npz'),
-        os.path.join(os.path.dirname(__file__), 'gen_map_tube','tube_corridor.npz'), # Fallback
+        os.path.join(os.path.dirname(__file__), '..', 'mincoil', 'map_manage','tube_corridor.npz'),
+
     ]
     found_npz = None
     for p in npz_path_candidates:

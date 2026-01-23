@@ -7,8 +7,7 @@ import os
 import time
 
 # 添加 tubeRRTstar 路径
-sys.path.append(os.path.join(os.path.dirname(__file__), 'tubeRRTstar'))
-
+sys.path.append(os.path.join(os.path.dirname(__file__), '..','tubeRRTstar'))
 from tube_rrt_star_2D import SimpleOccupancyMap2D
 
 # ==========================================
@@ -122,6 +121,21 @@ def sample_segment(coeff, T, n=100):
     return np.array(pts), np.array(vels)
 
 
+def discrete_jerk_energy(path_x, path_y, dt):
+    """
+    计算离散轨迹的 Jerk 能量
+    """
+    if len(path_x) < 4: return 0.0
+    vx = np.diff(path_x) / dt
+    vy = np.diff(path_y) / dt
+    ax = np.diff(vx) / dt
+    ay = np.diff(vy) / dt
+    jx = np.diff(ax) / dt
+    jy = np.diff(ay) / dt
+    return np.sum(jx**2 + jy**2) * dt
+
+
+
 # ==========================================
 #  ILC Planning Class
 # ==========================================
@@ -133,8 +147,8 @@ class ILCTubePlanner:
     
     def __init__(self, ref_path=None,
                  map_filename='MINCO/gen_map_tube/tube_corridor.npz',
-                 i_n=100, dt=0.02, v_max=5.0, tau=0.4, kp=1.0, kd=None, 
-                 kp_vl=5, kp_law=1.0, kd_law=0.5):
+                 i_n=100, dt=0.02, v_max=5.0, tau=1.5, kp=1, kd=0.2, 
+                 kp_vl=3, kp_law=1.0, kd_law=0.5):
         """
         初始化ILC规划器。
         
@@ -173,7 +187,6 @@ class ILCTubePlanner:
         self.kp_law = kp_law
         self.kd_law = kd_law
         
-
         # 加载数据
         self.grid, self.resolution, self.origin = self.load_map(self.map_filename)
         # 加载路径
@@ -218,7 +231,7 @@ class ILCTubePlanner:
         bound = f_r(t_new)
         
         # 从距离终点 L 距离开始线性收敛到 0
-        L = 1.5  # 从终点开始收敛的距离
+        L = 3.0  # 从终点开始收敛的距离
         bound_modified = bound.copy()
         idx_start = np.where(t_new >= total_dist - L)[0]
         if len(idx_start) > 0:
@@ -310,19 +323,20 @@ class ILCTubePlanner:
         if self.ref_path is None:
             raise RuntimeError("No reference path provided for ILC.")
 
+        # 使用minco多项式轨迹的导数作为初始参考速度
         if ref_vel is not None:
             xd, yd, bound, vxd, vyd = self.load_tube_path(self.ref_path, ref_vel)
 
-            # # 画一张二维图展示vd的变化
-            #vd=np.linalg.norm(np.array([vxd,vyd]),axis=0)
-            # plt.figure(figsize=(10, 5))
-            # plt.plot(vd, label='Velocity')
-            # plt.title('Velocity Profile')
-            # plt.xlabel('Time Step')
-            # plt.ylabel('Velocity')
-            # plt.legend()
-            # plt.grid(True)
-            # plt.show()
+            # 画一张二维图展示vd的变化
+            vd=np.linalg.norm(np.array([vxd,vyd]),axis=0)
+            plt.figure(figsize=(10, 5))
+            plt.plot(vd, label='Velocity')
+            plt.title('Velocity Profile')
+            plt.xlabel('Time Step')
+            plt.ylabel('Velocity')
+            plt.legend()
+            plt.grid(True)
+            plt.show()
 
             self.xd, self.yd, self.bound = xd, yd, bound
             self.vxd, self.vyd = vxd, vyd
@@ -336,31 +350,37 @@ class ILCTubePlanner:
         i_n, dt, v_max, tau, kp, kd, kp_vl, kp_law, kd_law = self.i_n, self.dt, self.v_max, self.tau, self.kp, self.kd, self.kp_vl, self.kp_law, self.kd_law
         current_all = self.current_all
         
-        j_n = current_all * 2  # 最大时间步数（留有余量）
+        j_n = current_all * 3  # 最大时间步数（增加倍数，防止因速度慢导致半途而废）
         
         # 存储数组初始化
         y = np.zeros((i_n, j_n + 1))  # 存储所有迭代的y坐标
         x = np.zeros((i_n, j_n + 1))  # 存储所有迭代的x坐标
         
-        # 激励阈值（用于Sigmoid函数）
-        exc = np.zeros((i_n, current_all))  # 激励阈值数组
-        for i in range(i_n):  # 为每次迭代设置阈值
-            exc[i, :] = bound / 1.0  # 阈值设为边界的三分之一
-            
-
-        
         # 控制输入数组初始化
         uc_parax = np.zeros((i_n, current_all + 1))  # x方向平行控制
         uc_paray = np.zeros((i_n, current_all + 1))  # y方向平行控制
-        uc_perpx = np.zeros((i_n, current_all + 1))  # x方向垂直控制
-        uc_perpy = np.zeros((i_n, current_all + 1))  # y方向垂直控制
         
-        uc_value = np.ones((i_n, current_all + 1))  # 控制值初始化为1
+        uc_value = np.ones((i_n, current_all + 1))   # 控制值初始化为1
         
+        # 预先初始化第一次迭代的平行控制输入 (i=0)
+        # 这样可以避免在 while 循环中进行 if i == 0 的判断和赋值
+        if self.vxd is not None and self.vyd is not None:
+            uc_parax[0, :current_all] = self.vxd
+            uc_paray[0, :current_all] = self.vyd
+        else:
+            # 计算路径切向向量
+            dx = np.diff(xd, append=xd[-1])
+            dy = np.diff(yd, append=yd[-1])
+            norms = np.sqrt(dx**2 + dy**2) + 1e-10
+            uc_parax[0, :current_all] = dx / norms
+            uc_paray[0, :current_all] = dy / norms
+        # 填充最后一个点
+        uc_parax[0, current_all] = uc_parax[0, current_all-1]
+        uc_paray[0, current_all] = uc_paray[0, current_all-1]
+
         sum_t = np.zeros(i_n)  # 存储每次迭代的总时间
-        
-        u_max = v_max  # 最大控制输入（未使用）
-        
+        sum_j = np.zeros(i_n)  # 存储每次迭代的总Jerk能量
+                
         print("Starting ILC Iterations...")  # 开始ILC迭代
         start_time = time.time()  # 记录开始时间
         
@@ -377,75 +397,53 @@ class ILCTubePlanner:
             
             # 推断初始方向
             dir_init = np.array([xd[1]-xd[0], yd[1]-yd[0]])  # 从前两个路径点计算初始方向
-            dir_init = dir_init / np.linalg.norm(dir_init)  # 单位化方向向量
+            dir_init = dir_init / (np.linalg.norm(dir_init) + 1e-10)  # 单位化方向向量
             velocity = dir_init * 1.0  # 以小速度开始
             
-            accelerate = np.array([0.0, 0.0])  # 初始加速度
-            v_des = velocity.copy()  # 期望速度初始化
-            
-            while current < current_all and j < j_n:  # current_all 为路径点总数,添加位置与速度限制
+            accelerate = np.array([0.0, 0.0])   # 初始加速度
+            v_des = velocity.copy()             # 期望速度初始化
+            while current < current_all and j < j_n:  # current_all 为路径点总数，current为当前路径点索引，j为时间步索引
                 x[i, j] = position[0]  # 记录当前位置x
                 y[i, j] = position[1]  # 记录当前位置y
                 
                 # 找到路径上最近的点
                 yp, xp, yp_next, xp_next, point = self.getpoint(x[i, j], y[i, j], xd, yd, current)
                 
-                # 终止条件：接近终点
-                dist_end_sq = (xp - xd[-1])**2 + (yp - yd[-1])**2  # 计算到终点的距离平方
-                if dist_end_sq < 0.2 and current > current_all - 50 and  np.linalg.norm(velocity) < 1:  # 距离足够近且路径快结束
+                ############ 终止条件：接近终点 #####################3
+                # 修改：计算 UAV 实际位置到终点的距离，而不是参考点的距离
+                dist_end_sq = (x[i, j] - xd[-1])**2 + (y[i, j] - yd[-1])**2
+                if dist_end_sq < 0.1 :# and np.linalg.norm(velocity) < 2:  # 距离足够近且速度足够小
+                    print("good path!!!!!!!")         
                     break  # 结束当前轨迹
                     
                 current = point  # 更新当前路径点索引
                 l = current  # 当前路径点索引
-                
-                # 误差向量(从当前位置指向参考路径点)
-                e_vec = np.array([xp - x[i, j], yp - y[i, j]])  # 计算误差向量
-                e_norm = np.linalg.norm(e_vec)  # 计算误差向量范数
-                e_value = e_norm - bound[l]  # 计算有界误差（考虑管廊边界）
-                
-                # 垂直控制分量
-                temp_perp = kp * e_vec + kd * (e_norm - last_e) * e_vec / (e_norm + 1e-5)  # PD控制：比例 + 微分项
-                
-                # 存储垂直控制
-                if l >= last_l:  # 确保只在路径索引增加时更新
-                    idx_start = last_l  # 更新起始索引
-                    idx_end = min(l + 1, current_all)  # 更新结束索引，不能超过路径总长度
-                    if idx_end > idx_start:  # 确保有有效的索引范围
-                        uc_perpx[i, idx_start : idx_end] = temp_perp[0]  # 存储x方向垂直控制
-                        uc_perpy[i, idx_start : idx_end] = temp_perp[1]  # 存储y方向垂直控制
-                
-                last_e = value_e
                 
                 # 方向向量
                 v_dir = np.array([xp_next - xp, yp_next - yp])  # 计算路径方向向量
                 den_para = np.linalg.norm(v_dir) + 1e-10  # 计算方向向量长度（避免除零）
                 v_dir = v_dir / den_para  # 单位化方向向量
                 
-                # 为第一次迭代初始化平行控制
-                if i == 0:  # 只有第一次迭代需要初始化
-                    if l >= last_l:  # 确保只在路径索引增加时更新
-                        idx_start = last_l  # 更新起始索引
-                        idx_end = min(l + 1, current_all)  # 更新结束索引
-                        if idx_end > idx_start:  # 确保有有效的索引范围
-                            if self.vxd is not None and self.vyd is not None:
-                                uc_parax[i, idx_start : idx_end] = self.vxd[l]
-                                uc_paray[i, idx_start : idx_end] = self.vyd[l]
-                            else:
-                                uc_parax[i, idx_start : idx_end] = v_dir[0] # uc_parax 存储平行控制分量
-                                uc_paray[i, idx_start : idx_end] = v_dir[1] # uc_paray 存储平行控制分量
-                
+                # 计算沿径速率
+                if i == 0:  # 第一次迭代使用较低速度
+                    value = 1.0  # 初始速度 
+
                 value = np.dot(velocity, v_dir)  # 计算当前速度在路径方向上的投影
                 
-                if i == 0:  # 第一次迭代使用较低速度
-                    if self.vxd is not None and self.vyd is not None:
-                        value = 1.0
-                    else:
-                        value = 2.0  # 初始速度较慢
+                # 误差向量(从当前位置指向参考路径点)
+                e_vec = np.array([xp - x[i, j], yp - y[i, j]])  # 计算误差向量
+                e_norm = np.linalg.norm(e_vec)                  # 计算误差向量范数
+
+                # 垂直控制分量
+                vc = value * ( kp * e_vec + kd * (e_norm - last_e) * e_vec / (e_norm + 1e-5) )# PD控制：比例 + 微分项
+                
+                last_e = e_norm # 记录上一步误差，用于计算e的导数
                     
+                # 切向控制分量(沿径速度)
                 vl = np.array([uc_parax[i, l], uc_paray[i, l]]) * value  # 计算切向控制向量
                 
                 # 饱和速度
-                vcc, vll = self.saturate(temp_perp * value, vl, v_max)  # 速度饱和处理
+                vcc, vll = self.saturate(vc, vl, v_max)  # 速度饱和处理
                 v_des = vcc + vll  # 期望速度向量
                 
                 # 动力学更新
@@ -453,11 +451,15 @@ class ILCTubePlanner:
                 position, velocity, accelerate = self.uav_dynamic(position, velocity, a, dt)  # 更新位置和速度
                 
                 if i < i_n - 1:  # 只有在不是最后一次迭代时才进行ILC更新
-                    # ILC 更新
-                    value_e = np.linalg.norm(e_vec)  # 计算当前误差范数
+                    # ILC 更新：
+                    # vk+1 = vk - \Chi(kp*e + kd*de)
+                    # \Chi(x) =def= kp_law * (sigmoid(x-xth) - 0.5)
+                    # sigmoid(x) = 1/(1+exp(-x))
+
+                    value_e = e_norm  # 复用之前计算的 e_norm，避免重复计算 np.linalg.norm(e_vec)
                     de = value_e - last_e  # 计算误差变化率
                     
-                    term = -kp_law * value_e - kd_law * de + exc[i, l]  # 计算Sigmoid函数的自变量
+                    term = -kp_law * value_e - kd_law * de + (bound[l] / 1.0)  # 计算Sigmoid函数的自变量
                     sigmoid = 1.0 / (1.0 + np.exp(term))  # 计算Sigmoid函数值
                     temp = kp_vl * (sigmoid - 0.5)  # 计算学习增益调整量
                     
@@ -477,18 +479,27 @@ class ILCTubePlanner:
                 last_l = l  # 更新上一步的路径索引
                 
             # 计算实际轨迹时间
-            valid_x = x[i, :]  # 获取当前迭代的所有x坐标
-            non_zeros = np.nonzero(valid_x)[0]  # 找到非零x坐标的索引（有效轨迹点）
-            if len(non_zeros) > 0:  # 如果有有效轨迹点
-                idx_end = non_zeros[-1]  # 获取最后一个有效点的索引
-                t_total = idx_end * dt  # 总时间 = 最后一个点的索引 × 时间步长
-            else:  # 如果没有有效轨迹点
-                t_total = 0.0  # 时间为0
+            # 使用 j 计数器更准确，避免 x=0 时的 bug
+            if j > 0:
+                idx_end = j - 1
+                t_total = idx_end * dt
+            else:
+                idx_end = 0
+                t_total = 0.0
             
             sum_t[i] = t_total  # 存储当前迭代的总时间
-            print(f"Iteration {i+1}/{i_n}: Time {t_total:.2f}s, Points {idx_end if len(non_zeros) > 0 else 0}")  # 打印迭代信息
             
-        print(f"Total elapsed time: {time.time() - start_time:.2f}s")  # 打印总运行时间
+            # 计算当前迭代的 Jerk 能量
+            if j > 0:
+                path_x = x[i, :j]
+                path_y = y[i, :j]
+                sum_j[i] = discrete_jerk_energy(path_x, path_y, dt)
+            else:
+                sum_j[i] = 0.0
+
+            print(f"Iteration {i+1}/{i_n}: Time {t_total:.2f}s, Points {idx_end if j > 0 else 0}")  # 打印迭代信息
+            
+        #print(f"Total elapsed time: {time.time() - start_time:.2f}s")  # 打印总运行时间
         
         # 存储ILC迭代结果的元组：i_n: 迭代次数 j_n: 最大时间步数 current_all: 路径点数
         # x: 所有迭代的x坐标数组 (shape: (i_n, j_n + 1))，记录每次迭代中UAV的x位置历史
@@ -496,11 +507,12 @@ class ILCTubePlanner:
         # sum_t: 每次迭代的总飞行时间数组 (shape: (i_n,))，单位为秒
         # uc_parax: x方向平行控制输入数组 (shape: (i_n, current_all + 1))，沿路径方向的x分量
         # uc_paray: y方向平行控制输入数组 (shape: (i_n, current_all + 1))，沿路径方向的y分量
-        # uc_perpx: x方向垂直控制输入数组 (shape: (i_n, current_all + 1))，垂直于路径的x分量（用于纠偏）
-        # uc_perpy: y方向垂直控制输入数组 (shape: (i_n, current_all + 1))，垂直于路径的y分量（用于纠偏）
+        uc_perpx = 0   # uc_perpx: x方向垂直控制输入数组 (shape: (i_n, current_all + 1))，垂直于路径的x分量（用于纠偏）（已弃用）
+        uc_perpy = 0   # uc_perpy: y方向垂直控制输入数组 (shape: (i_n, current_all + 1))，垂直于路径的y分量（用于纠偏）（已弃用）
         # uc_value: 控制值数组 (shape: (i_n, current_all + 1))，ILC学习更新的标量值
         # bound: 路径边界半径数组
-        self.results = (x, y, sum_t, uc_parax, uc_paray, uc_perpx, uc_perpy, uc_value, bound)
+        # sum_j: 每次迭代的总Jerk能量数组 (shape: (i_n,))
+        self.results = (x, y, sum_t, uc_parax, uc_paray, uc_perpx, uc_perpy, uc_value, bound, sum_j)
         return self.results
 
 # ==========================================
@@ -756,7 +768,7 @@ class TubeMincoVisualizer:
 # ==========================================
 
 class TubeMincoILPlanner:
-    def __init__(self, npz_path, ilc_iters=50):
+    def __init__(self, npz_path, ilc_iters=None):
         self.npz_path = npz_path
         self.load_corridor()
         self.init_conditions()
@@ -778,8 +790,8 @@ class TubeMincoILPlanner:
         self.ilc_planner = ILCTubePlanner(
             ref_path=None,
             map_filename=self.npz_path,
-            i_n=ilc_iters, dt=0.02, v_max=5.0,
-            tau=3, kp=3.0, kd=None,
+            i_n=ilc_iters, dt=0.02, v_max=4.0,
+            tau=1.6, kp=1.0, kd=None,
             kp_vl=3.0, kp_law=2.0, kd_law=0.05
         )
 
@@ -893,7 +905,7 @@ class TubeMincoILPlanner:
 
         # 时间惩罚
         time_penalty = 1.0 * np.sum(T_list)
-        return J + time_penalty
+        return time_penalty + J
 
     def traj_from_x(self, x):
         # 1. 提取优化变量：中间点参数 xi 和时间参数 tau
@@ -965,8 +977,8 @@ class TubeMincoILPlanner:
         # 6. 更新可视化
         self.visualizer.update_plot(self.traj_history, self.q_history, self.iter_count-1, sum_T)
 
-    def run_minco_optimization(self, x0=None, maxiters=50):
-        print(f"MINCO Optimization with n={self.n} segments.")
+    def run_minco_optimization(self, x0=None, maxiters=None):
+        # print(f"MINCO Optimization with n={self.n} segments.")
 
         # Initial guess
         if x0 is None:
@@ -977,9 +989,7 @@ class TubeMincoILPlanner:
         self.opt_callback(x0)
 
         # Optimize
-        res = minimize(self.minco_cost, x0, method='L-BFGS-B', callback=self.opt_callback, options={'maxiter': maxiters} )
-
-        print("===============================Final==================================")
+        res = minimize(self.minco_cost, x0, method='L-BFGS-B', callback=self.opt_callback, options={'maxiter': maxiters} if maxiters is not None else None )
 
         # Process results
         xi_opt = res.x[:2 * (self.n - 1)]
@@ -1001,7 +1011,6 @@ class TubeMincoILPlanner:
         traj = np.vstack(segs)
         traj_vel = np.vstack(vels)
 
-        # plt.show() # Don't block
         return traj, traj_vel, q_opt, T_opt, res.x
         # traj: 优化后的完整轨迹点序列 (shape: (总采样点数, 2))，每行是一个 (x, y) 坐标
         # traj_vel: 优化后的完整轨迹速度序列 (shape: (总采样点数, 2))
@@ -1010,11 +1019,14 @@ class TubeMincoILPlanner:
         # res.x: 优化器的结果向量 (shape: (2*(n-1) + n,))，包含中间点参数 xi 和时间参数 tau
 
 
-    def run_minco_ilc_iterative_pipeline(self, max_iters=5):
+    def run_minco_ilc_iterative_pipeline(self, max_iters=None):
         x0 = None
 
         for k in range(max_iters):
             print(f"\n=== Outer Iteration {k+1}/{max_iters} ===")
+
+
+
 
             # 1. Run MINCO
             traj_opt, traj_vel_opt, q_opt, T_opt, x_opt = self.run_minco_optimization(x0,10)
@@ -1024,24 +1036,33 @@ class TubeMincoILPlanner:
             self.visualizer.plot_traj(traj_opt)
 
             # 2. Run ILC
-            # Need to set reference path for ILC
-            print(traj_vel_opt)
             ilc_results = self.ilc_planner.run_ilc_iterations(traj_opt, traj_vel_opt)
-            ilc_x = ilc_results[0][-1] # Last iteration
+
+            ## check ILC result ##
+            # 获取重采样后的参考轨迹并用于可视化
+            ilc_x = ilc_results[0][-1] 
             ilc_y = ilc_results[1][-1]
-            ilc_bound = ilc_results[-1] # Get bound from results
 
-            # 获取重采样后的参考轨迹
-            ref_traj_resampled = np.vstack([self.ilc_planner.xd, self.ilc_planner.yd]).T
+            # Get bound from results
+            ilc_bound = ilc_results[8]
+            ilc_energies = ilc_results[9]
+            ilc_times = ilc_results[2]
 
-            # Extract valid trajectory points (non-zero x coordinates)
-            valid_indices = np.nonzero(ilc_x)[0]
-            ilc_traj = np.vstack([ilc_x[:valid_indices[-1]+1], ilc_y[:valid_indices[-1]+1]]).T
+            # Record ILC history
+            self.energy_history.extend(ilc_energies)
+            self.time_history.extend(ilc_times)
+                                                                         
+            ref_traj_resampled = np.vstack([self.ilc_planner.xd, self.ilc_planner.yd]).T            
             
+            # Extract valid trajectory points (non-zero x coordinates)
+            valid_indices = np.nonzero(ilc_x)[0]                                                    
+            ilc_traj = np.vstack([ilc_x[:valid_indices[-1]+1], ilc_y[:valid_indices[-1]+1]]).T
+
+            # Plot ILC results（minco轨迹，ilc轨迹，边界）
             self.visualizer.plot_traj(traj_opt, ilc_traj, bound=ilc_bound, bound_ref_traj=ref_traj_resampled)
 
             # 3. Extract times
-            q_pts = np.vstack([self.p0, q_opt, self.pf])
+            q_pts = np.vstack([self.p0, q_opt, self.pf]) 
 
             T_new = self.extract_segment_times(ilc_x, ilc_y, q_pts, self.ilc_planner.dt)
             print(f"New times from ILC: {T_new}")
@@ -1055,6 +1076,11 @@ class TubeMincoILPlanner:
             tau_next = np.log(T_new)
 
             x0 = np.concatenate([xi_next, tau_next])
+
+        # Plot history
+        out_dir = os.path.join('MINCO', 'minco_opt_data')
+        os.makedirs(out_dir, exist_ok=True)
+        self.visualizer.plot_history(self.energy_history, self.time_history, out_dir)
 
 
 
@@ -1084,8 +1110,7 @@ class TubeMincoILPlanner:
 if __name__ == "__main__":
     # 查找 npz 文件
     npz_path_candidates = [
-        os.path.join(os.path.dirname(__file__), '..','MINCO', 'gen_map_tube','tube_corridor.npz'),
-        os.path.join(os.path.dirname(__file__), 'gen_map_tube','tube_corridor.npz'), # Fallback
+        os.path.join(os.path.dirname(__file__), '..', 'mincoil', 'map_manage','tube_corridor.npz'),
     ]
     found_npz = None
     for p in npz_path_candidates:
@@ -1096,12 +1121,18 @@ if __name__ == "__main__":
     if found_npz:
         # 创建合并的规划器实例
         # ilc_iters: ILC 内部迭代次数
-        planner = TubeMincoILPlanner(found_npz, ilc_iters=20)
-        # 运行完整的 MINCO-ILC 流水线
-        # max_iters: MINCO-ILC 外部循环次数
-        planner.run_minco_ilc_iterative_pipeline(max_iters=3)
-        #阻塞显示图片
-        plt.ioff()
-        plt.show()
+        planner = TubeMincoILPlanner(found_npz, ilc_iters=3)
+        # 运行完整的 MINCO-ILC 流水线（用 try/except 捕获 KeyboardInterrupt 以优雅退出）
+        try:
+            planner.run_minco_ilc_iterative_pipeline(max_iters=2)
+        except KeyboardInterrupt:
+            print("Execution interrupted by user (KeyboardInterrupt). Exiting gracefully.")
+        finally:
+            # 阻塞显示图片（如果还有图需要保留）
+            try:
+                plt.ioff()
+                plt.show()
+            except Exception:
+                pass
     else:
         print("Error: tube_corridor.npz not found.")

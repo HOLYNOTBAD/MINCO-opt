@@ -5,7 +5,7 @@ import sys
 import os
 
 # 添加 tubeRRTstar 路径
-sys.path.append(os.path.join(os.path.dirname(__file__), 'tubeRRTstar'))
+sys.path.append(os.path.join(os.path.dirname(__file__),'..' ,'tubeRRTstar'))
 
 from tube_rrt_star_2D import (
     SimpleOccupancyMap2D,

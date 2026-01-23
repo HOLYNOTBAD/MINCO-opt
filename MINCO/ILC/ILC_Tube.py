@@ -11,7 +11,7 @@ class ILCTubePlanner:
     """
     
     def __init__(self, path_filename='MINCO/ILC/ref_traj/optimized_traj.npz', 
-                 map_filename='MINCO/gen_map_tube/tube_corridor.npz',
+                 map_filename='MINCO/ILC/map_manage/tube_corridor.npz',
                  i_n=50, dt=0.02, v_max=5.0, tau=1.5, kp=3.0, kd=None, 
                  kp_vl=3, kp_law=2, kd_law=0.05):
         """
