@@ -31,7 +31,7 @@ from tube_rrt_star_2D import (
 )
 
 # ==========================================
-# 1. 从MINCO/gen_map_tube/tube_corridor.npz 中加载地图和走廊
+# 1. 从MINCO/map_manage/tube_corridor.npz 中加载地图和走廊
 # ==========================================
 
 setting = {
@@ -49,7 +49,7 @@ setting = {
 
 # 首先尝试从生成脚本的输出 npz 中加载走廊（优先），请根据实际路径调整
 npz_path_candidates = [
-    os.path.join(os.path.dirname(__file__), '..', '..', 'MINCO', 'gen_map_tube','tube_corridor.npz'),
+    os.path.join(os.path.dirname(__file__), 'map_manage','tube_corridor.npz'),
 ]
 found_npz = None
 for p in npz_path_candidates:

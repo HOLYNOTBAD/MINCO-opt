@@ -18,7 +18,7 @@ def road():
 
 def bound_l(n_points):
     """
-    Return tube radius.
+    Return tube radius. 创造一个长度为n_points的数组，值全为2.0
     """
     return np.full(n_points, 2.0)
 
@@ -70,17 +70,17 @@ def getpoint(x_curr, y_curr, xd, yd, current_idx):
     
     return yp, xp, yp_next, xp_next, point_idx
 
-def saturate(v_perp, v_para, v_max):
+def saturate(v_p, v_h, v_max):
     """
     Saturate velocity vector.
     """
-    v_sum = v_perp + v_para
+    v_sum = v_p + v_h
     v_norm = np.linalg.norm(v_sum)
     
     if v_norm > v_max:
         scale = v_max / v_norm
-        return v_perp * scale, v_para * scale
-    return v_perp, v_para
+        return v_p * scale, v_h * scale
+    return v_p, v_h
 
 def uav_dynamic(pos, vel, acc, dt):
     """
@@ -93,15 +93,15 @@ def uav_dynamic(pos, vel, acc, dt):
 def main():
     # %% 初始化
     xd, yd = road() # 获取路径
-    current_all = len(xd)
-    bound = bound_l(current_all) # 获取管道半径 (array)
-    xd1, yd1, xd2, yd2 = bound_store(xd, yd, bound) # 获取边界
+    l_max = len(xd) # 总点数
+    bound = bound_l(l_max) # 获取管道半径 (array)
+    xd1, yd1, xd2, yd2 = bound_store(xd, yd, bound) # 获取边界的坐标
     
     i_n = 20 # 迭代次数
-    j_n = current_all # Max points
+    j_n = l_max # Max points
     
     # Storage
-    # Python 0-based indexing.
+    # Python 是0基索引，和c++类似，数组从0开始
     # y, x: (i_n, j_n + 1)
     y = np.zeros((i_n, j_n + 1))
     x = np.zeros((i_n, j_n + 1))
@@ -112,10 +112,10 @@ def main():
     for i in range(i_n):
         exc[i, :] = bound / 3.0
         
-    uc_parax = np.zeros((i_n, j_n + 1))
-    uc_paray = np.zeros((i_n, j_n + 1))
-    uc_perpx = np.zeros((i_n, j_n + 1))
-    uc_perpy = np.zeros((i_n, j_n + 1))
+    uc_px = np.zeros((i_n, j_n + 1))
+    uc_py = np.zeros((i_n, j_n + 1))
+    uc_hx = np.zeros((i_n, j_n + 1))
+    uc_hy = np.zeros((i_n, j_n + 1))
     
     uc_value = np.ones((i_n, j_n + 1))
     
@@ -128,7 +128,7 @@ def main():
     kp = 1.5
     kd = 1.0
     kp_vl = 0.05
-    tau = 5.0
+    tau = 2.0
     kp_law = 1.0
     kd_law = 0.5
     
@@ -142,71 +142,67 @@ def main():
     # So Python range should be range(i_n - 1).
     
     for i in range(i_n - 1):
-        current = 0
+        l = 0
         j = 0
         last_e = 0.0
         value_e = 0.0
         last_l = 0
         
+        # 这几个参数记录的是飞行器的真实状态
         position = np.array([xd[0], yd[0]]) # Start at beginning of path
-        velocity = np.array([4.0, 0.0])
+        velocity = np.array([3.0, 3.0]) # Initial velocity
         accelerate = np.array([0.0, 0.0])
         
-        v_des = np.array([4.0, 0.0])
+        # v_des为控制速度指令，这里给他了一个初始值
+        v_des = np.array([0.0, 0.0])
         
-        while current < current_all and j < j_n:
+        while l < l_max and j < j_n:
             x[i, j] = position[0]
             y[i, j] = position[1]
             
             # getpoint
-            yp, xp, yp_next, xp_next, point = getpoint(x[i, j], y[i, j], xd, yd, current)
+            yp, xp, yp_next, xp_next, l = getpoint(x[i, j], y[i, j], xd, yd, l)
             
-            # Termination condition
-            # if (xp)^2+(yp)^2<3 && current>current_all-100
-            # Adapted: if distance to end < 3.0 and current is large
+            # 终止条件
             dist_end_sq = (xp - xd[-1])**2 + (yp - yd[-1])**2
-            if dist_end_sq < 3.0 and current > current_all - 100:
+            if dist_end_sq < 3.0 and l > l_max - 100:
                 break
                 
-            current = point
-            l = current
-            
-            # Error vector
+            # 误差向量
             e_vec = np.array([xp - x[i, j], yp - y[i, j]])
             e_norm = np.linalg.norm(e_vec)
-            e_value = e_norm - bound[l]
+
+            # 计算切向量
+            v_dir = np.array([xp_next - xp, yp_next - yp])  #切向方向
+            v_dir = v_dir / (np.linalg.norm(v_dir) + 1e-10) #归一化得到切向单位向量
             
-            # Path convergence term
-            # temp_perp = kp.*e_vec + kd.*(norm(e_vec,2)-last_e).*e_vec/(norm(e_vec,2)+0.00001);
-            temp_perp = kp * e_vec + kd * (e_norm - last_e) * e_vec / (e_norm + 1e-5)
-            
-            # Store perp control
-            if l >= last_l:
-                uc_perpx[i, last_l : l+1] = temp_perp[0]
-                uc_perpy[i, last_l : l+1] = temp_perp[1]
-            
-            last_e = value_e
-            
-            v_dir = np.array([xp_next - xp, yp_next - yp])
-            den_para = np.linalg.norm(v_dir) + 1e-10
-            v_dir = v_dir / den_para
-            
-            if i == 0:
-                if l >= last_l:
-                    uc_parax[i, last_l : l+1] = v_dir[0]
-                    uc_paray[i, last_l : l+1] = v_dir[1]
-            
+            # 计算沿切方向的速度 也就是v(l)
             value = np.dot(velocity, v_dir)
-            
             if i == 0:
                 value = 4.0
-                
-            # vl = [uc_parax(i,l),uc_paray(i,l)]*value;
-            vl = np.array([uc_parax[i, l], uc_paray[i, l]]) * value
+
+            # 1.径向方向控制
+            uc_p = kp * e_vec + kd * (e_norm - last_e) * e_vec / (e_norm + 1e-5)
             
-            # Saturate
-            vcc, vll = saturate(temp_perp * value, vl, v_max)
-            v_des = vcc + vll
+            if l >= last_l:
+                uc_px[i, last_l : l+1] = uc_p[0]
+                uc_py[i, last_l : l+1] = uc_p[1]
+                
+            uc_p = uc_p * value
+
+            last_e = value_e
+
+            # 2.切向方向控制
+            if i == 0:
+                if l >= last_l:
+                    uc_hx[i, last_l : l+1] = v_dir[0]
+                    uc_hy[i, last_l : l+1] = v_dir[1]
+            
+            uc_h = np.array([uc_hx[i, l], uc_hy[i, l]]) * value
+            
+            # 切向方向与法向方向速度饱和
+            uc_p, uc_h = saturate(uc_p, uc_h, v_max)
+            v_des = uc_p + uc_h
             
             # Dynamics
             a = tau * (v_des - velocity)
@@ -215,14 +211,7 @@ def main():
             # ILC Update
             value_e = np.linalg.norm(e_vec)
             de = value_e - last_e # Note: last_e here is the OLD value_e from previous step?
-            # In MATLAB:
-            # last_e = value_e; (updates last_e to be the value from START of loop step, which was 0 or prev)
-            # ...
-            # value_e = norm(e_vec,2); (new error)
-            # de = value_e - last_e;
-            # So yes, de is (current_error - prev_error).
-            
-            # temp = kp_vl*(1/(1+exp(-kp_law*value_e-kd_law*de+exc(i,l)))-0.5);
+
             term = -kp_law * value_e - kd_law * de + exc[i, l]
             sigmoid = 1.0 / (1.0 + np.exp(term))
             temp = kp_vl * (sigmoid - 0.5)
@@ -233,8 +222,8 @@ def main():
                 uc_value[i+1, last_l : l+1] = np.maximum(uc_value[i+1, last_l : l+1], 0)
                 
                 # Update next iteration tangential control
-                uc_parax[i+1, last_l : l+1] = uc_value[i+1, l] * v_dir[0]
-                uc_paray[i+1, last_l : l+1] = uc_value[i+1, l] * v_dir[1]
+                uc_hx[i+1, last_l : l+1] = uc_value[i+1, l] * v_dir[0]
+                uc_hy[i+1, last_l : l+1] = uc_value[i+1, l] * v_dir[1]
             
             j += 1
             last_l = l
@@ -249,7 +238,7 @@ def main():
     
     # Figure 1: Time
     plt.figure(1, figsize=(12, 9))
-    plt.plot(range(1, i_n), sum_t[:i_n-1], linewidth=1)
+    plt.scatter(range(1, i_n), sum_t[:i_n-1], s=100, alpha=0.6, color='blue', edgecolors='black')
     plt.title('Time', fontname='serif', fontsize=20)
     plt.xlabel("Epoch", fontname='serif', fontsize=20)
     plt.ylabel("Time (s)", fontname='serif', fontsize=20)
