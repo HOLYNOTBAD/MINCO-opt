@@ -142,6 +142,8 @@ def main():
     # So Python range should be range(i_n - 1).
     
     for i in range(i_n - 1):
+
+        # 1. INITIALIZE
         l = 0
         j = 0
         last_e = 0.0
@@ -156,14 +158,15 @@ def main():
         # v_des为控制速度指令，这里给他了一个初始值
         v_des = np.array([0.0, 0.0])
         
+        # 单次迭代过程
         while l < l_max and j < j_n:
             x[i, j] = position[0]
             y[i, j] = position[1]
             
-            # getpoint
+            # 2. getpoint 根据当前位置获取最近的l上路径点及索引
             yp, xp, yp_next, xp_next, l = getpoint(x[i, j], y[i, j], xd, yd, l)
             
-            # 终止条件
+            # 3. 终止条件
             dist_end_sq = (xp - xd[-1])**2 + (yp - yd[-1])**2
             if dist_end_sq < 3.0 and l > l_max - 100:
                 break
@@ -181,7 +184,7 @@ def main():
             if i == 0:
                 value = 4.0
 
-            # 1.径向方向控制
+            # 4.径向方向控制
             uc_p = kp * e_vec + kd * (e_norm - last_e) * e_vec / (e_norm + 1e-5)
             
             if l >= last_l:
@@ -192,7 +195,7 @@ def main():
 
             last_e = value_e
 
-            # 2.切向方向控制
+            # 5.切向方向控制
             if i == 0:
                 if l >= last_l:
                     uc_hx[i, last_l : l+1] = v_dir[0]
@@ -200,15 +203,15 @@ def main():
             
             uc_h = np.array([uc_hx[i, l], uc_hy[i, l]]) * value
             
-            # 切向方向与法向方向速度饱和
+            # 6. 切向方向与法向方向速度饱和
             uc_p, uc_h = saturate(uc_p, uc_h, v_max)
             v_des = uc_p + uc_h
             
-            # Dynamics
+            # 7. Dynamics 动力学前向模拟
             a = tau * (v_des - velocity)
             position, velocity, accelerate = uav_dynamic(position, velocity, a, dt)
             
-            # ILC Update
+            # 8. ILC 迭代切向速度
             value_e = np.linalg.norm(e_vec)
             de = value_e - last_e # Note: last_e here is the OLD value_e from previous step?
 
