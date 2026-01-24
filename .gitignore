@@ -2,4 +2,6 @@
 build/
 devel/
 .marscode/
-MINCO/__pycache__/
+# all Python cache directories
+**/__pycache__/
+**/*.py[cod]
